@@ -1,0 +1,144 @@
+-- Queries over the application record — the durable half of what used to live in
+-- user_jobs. See migrations/0064_applications.sql for why it is a table of its own.
+
+-- name: ListOrphanedApplications :many
+-- The caller's applications whose posting the catalogue no longer holds.
+--
+-- Deliberately joins nothing: the posting's deletion cleared job_id, so there is no posting to reach
+-- and sqlc.embed over a LEFT JOIN would generate a non-pointer Job that fails at scan
+-- time on the NULL columns (measured). The employer and role title are on the record
+-- itself, which is the whole reason they were copied there.
+--
+-- The board reads these alongside the posting-backed rows and merges the two; they are
+-- few by nature — one appears only when a posting a candidate applied to is deleted.
+--
+-- Takes OFFSET as well as LIMIT so a caller paging the merged board (ListInteractions)
+-- can advance past the first page of orphans instead of re-reading the same top-N rows
+-- on every page. The query alone cannot fix that: ListInteractions is what divides the
+-- requested (limit, offset) window between the posting-backed rows and these — it asks
+-- for what the posting-backed page left over, at the offset that page ended on, and does
+-- not ask at all when the page is already full. It handed the same window to both until
+-- 2026-09-06, which returned up to 2*limit rows and skipped a window per page.
+SELECT a.id, a.company_slug, a.role_title, a.applied_at, a.stage, a.notes, a.followed_up_at,
+       a.created_at AS added_to_board_at,
+       (SELECT count(*)
+          FROM emails e
+         WHERE e.application_id = a.id
+           AND e.deleted_at IS NULL AND e.direction = 'incoming') AS email_count,
+       -- Same last-activity rule as the posting-backed rows: the apply date, the newest
+       -- linked message, or the employer's newest freehire pipeline move, whichever is
+       -- latest. Mail and events are reached through the application, never through the
+       -- posting, which no longer exists.
+       (CASE WHEN a.applied_at IS NOT NULL THEN
+          GREATEST(a.applied_at,
+                   (SELECT max(e.received_at)
+                      FROM emails e
+                     WHERE e.application_id = a.id
+                       AND e.deleted_at IS NULL AND e.direction = 'incoming'),
+                   (SELECT max(ev.occurred_at)
+                      FROM application_events ev
+                     WHERE ev.application_id = a.id
+                       AND ev.kind = 'stage_set'
+                       AND ev.source = 'employer'
+                       AND ev.retracted_at IS NULL))
+        END)::timestamptz AS last_activity_at
+  FROM applications a
+ WHERE a.user_id = $1
+   AND a.job_id IS NULL
+ ORDER BY a.applied_at DESC NULLS LAST, a.id DESC
+ LIMIT $2 OFFSET $3;
+
+-- name: CountOrphanedApplications :one
+-- How many of the caller's applications have no posting left — see
+-- ListOrphanedApplications. CountUserJobs is driven entirely FROM user_jobs, whose
+-- rows cascade away with a deleted posting, so it never counts these; this is added
+-- to its "all"/"applied"/"board" totals by the caller.
+SELECT count(*) FROM applications WHERE user_id = $1 AND job_id IS NULL;
+
+-- name: TrackApplicationByID :one
+-- Set an application's stage and/or notes, naming the application itself.
+--
+-- The slug-addressed TrackJob cannot serve an application whose posting was
+-- deleted: it upserts through `jobs`, and there is no row left to join. That is not a
+-- corner case on the board — the card is there, and dragging it is the ordinary act
+-- that had no working write path.
+--
+-- Partial update and the stage_set ledger event on a real transition, both exactly as
+-- TrackJob does them: `prior` reads the pre-update value, so re-setting the stage a row
+-- already carries, or a notes-only call, records nothing.
+WITH prior AS (
+    SELECT a.stage FROM applications a
+     WHERE a.id = sqlc.arg(id) AND a.user_id = sqlc.arg(user_id)
+), upd AS (
+    UPDATE applications
+       SET stage = COALESCE(sqlc.narg(stage), applications.stage),
+           notes = COALESCE(sqlc.narg(notes), applications.notes)
+     WHERE applications.id = sqlc.arg(id) AND applications.user_id = sqlc.arg(user_id)
+    RETURNING *
+), event AS (
+    -- job_id and company_slug come off the application, not off a posting: this row may
+    -- have no posting at all, and the employer is denormalised here for that reason.
+    INSERT INTO application_events (user_id, application_id, job_id, company_slug, kind, signal, occurred_at, source)
+    SELECT sqlc.arg(user_id), u.id, u.job_id, u.company_slug, 'stage_set', u.stage, now(), sqlc.arg(event_source)::text
+      FROM upd u
+     WHERE u.stage IS NOT NULL
+       AND u.stage IS DISTINCT FROM (SELECT prior.stage FROM prior)
+)
+SELECT u.job_id, u.applied_at, u.stage, u.notes, u.followed_up_at FROM upd u;
+
+-- name: ClearApplicationProgressByID :one
+-- Drop an application's pipeline progress while keeping the record — the notes are the
+-- candidate's own text, and reconsidering is not a claim the process never happened.
+-- Clearing both stage and applied_at is what takes it off the board (see columnOf).
+UPDATE applications
+   SET stage = NULL, applied_at = NULL
+ WHERE applications.id = sqlc.arg(id) AND applications.user_id = sqlc.arg(user_id)
+RETURNING job_id, applied_at, stage, notes, followed_up_at;
+
+-- name: UntrackApplicationByID :one
+-- Take an application off the board outright, naming the application itself.
+--
+-- Deletes the record, matching UntrackJob: this is the candidate saying it is not a
+-- thing they are pursuing, which is a claim about their own record and theirs alone to
+-- make. A catalogue clean-up has no such standing, which is why it may not do this.
+DELETE FROM applications
+ WHERE applications.id = sqlc.arg(id) AND applications.user_id = sqlc.arg(user_id)
+RETURNING job_id, applied_at, stage, notes, followed_up_at;
+
+
+-- name: ListAppliedCompanySlugs :many
+-- The employers the caller has applied to, as the company slugs the catalogue files
+-- postings under — what the feed's "you already applied here" badge and its
+-- hide_applied_companies exclusion compare a posting's company_slug against.
+--
+-- Only an application that was MADE counts (applied_at IS NOT NULL, per 0065): a tracked
+-- row the candidate is still preparing asserts nothing about the employer yet.
+--
+-- The slug is the posting's CURRENT company_slug while the posting exists, and the
+-- application's own snapshot only once it is gone. The snapshot is frozen at apply time,
+-- and the slug rule has moved under it since (legal forms stripped, aggregators
+-- re-attributed: measured 2026-10-31, 383 of 11,856 applications held a snapshot their
+-- posting no longer carries, 165 of them with no alias to bridge the two). The posting's
+-- own slug is what backfill-derive and merge-companies keep current; the snapshot is
+-- only the fallback that keeps a deleted posting's employer counted. Either one is then
+-- resolved through company_slug_aliases, so an employer merged since still matches.
+--
+-- Bounded to the newest max_applications applications BEFORE the posting join, because
+-- the join is a random heap read per application: unbounded, the heaviest account
+-- (7,296 applications) took 10.7s cold. The overflow is a long-ago employer missing its
+-- badge, never a wrong one.
+WITH recent AS (
+    SELECT COALESCE(NULLIF(j.company_slug, ''), a.company_slug) AS slug, a.applied_at
+      FROM applications a
+      LEFT JOIN jobs j ON j.id = a.job_id
+     WHERE a.user_id = sqlc.arg(user_id)
+       AND a.applied_at IS NOT NULL
+     ORDER BY a.applied_at DESC
+     LIMIT sqlc.arg(max_applications)
+)
+SELECT COALESCE(al.canonical_slug, r.slug)::text AS company_slug
+  FROM recent r
+  LEFT JOIN company_slug_aliases al ON al.alias_slug = r.slug
+ WHERE r.slug <> ''
+ GROUP BY COALESCE(al.canonical_slug, r.slug)
+ ORDER BY max(r.applied_at) DESC, company_slug;

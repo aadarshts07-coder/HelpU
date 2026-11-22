@@ -1,0 +1,3 @@
+[submodule "services/freehire"]
+	path = services/freehire
+	url = https://github.com/strelov1/freehire.git

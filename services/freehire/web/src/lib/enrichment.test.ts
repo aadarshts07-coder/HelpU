@@ -1,0 +1,113 @@
+import { describe, expect, it } from 'vitest';
+import { cardTags, formatSalary, summaryFacets } from './enrichment';
+import type { Enrichment, Job } from './types';
+
+describe('formatSalary', () => {
+  it('returns null when neither bound is stated', () => {
+    expect(formatSalary({} as Enrichment)).toBeNull();
+  });
+
+  it('preserves both source bounds on a job detail page', () => {
+    expect(
+      formatSalary(
+        {
+          salary_min: 2_501,
+          salary_max: 3_000,
+          salary_currency: 'EUR',
+          salary_period: 'month',
+        } as Enrichment,
+        'standard',
+      ),
+    ).toBe('2,501 – 3,000 € / mo');
+  });
+
+  it.each([
+    [{ salary_min: 27_510, salary_max: 51_090, salary_currency: 'EUR' }, '27,510 – 51,090 €'],
+    [{ salary_min: 45_500 }, 'from 45,500'],
+    [{ salary_max: 80_125 }, 'up to 80,125'],
+    [{}, null],
+  ])('preserves exact amounts and open bounds in standard notation', (salary, expected) => {
+    expect(formatSalary(salary as Enrichment, 'standard')).toBe(expected);
+  });
+
+  it('compacts a full range to K, with the currency trailing', () => {
+    expect(formatSalary({ salary_min: 30_000, salary_max: 50_000, salary_currency: 'GBP' } as Enrichment)).toBe(
+      '30K – 50K £',
+    );
+  });
+
+  it('rounds a non-round thousand to the nearest K', () => {
+    expect(formatSalary({ salary_min: 45_500, salary_max: 45_500 } as Enrichment)).toBe('46K – 46K');
+  });
+
+  it('compacts millions with one decimal only when not round', () => {
+    expect(formatSalary({ salary_min: 1_200_000, salary_max: 2_000_000 } as Enrichment)).toBe('1.2M – 2M');
+  });
+
+  it('compacts billions the same way as millions', () => {
+    expect(formatSalary({ salary_min: 1_000_000_000, salary_max: 1_500_000_000 } as Enrichment)).toBe('1B – 1.5B');
+  });
+
+  it('leaves sub-thousand amounts (e.g. an hourly rate) uncompacted', () => {
+    expect(
+      formatSalary({ salary_min: 40, salary_max: 60, salary_currency: 'USD', salary_period: 'hour' } as Enrichment),
+    ).toBe('40 – 60 $ / hr');
+  });
+
+  it('renders a min-only floor as "from …"', () => {
+    expect(formatSalary({ salary_min: 100_000, salary_currency: 'USD' } as Enrichment)).toBe('from 100K $');
+  });
+
+  it('renders a max-only ceiling as "up to …"', () => {
+    expect(formatSalary({ salary_max: 80_000, salary_currency: 'EUR' } as Enrichment)).toBe('up to 80K €');
+  });
+
+  it('falls back to the raw currency code when it is not in the symbol map', () => {
+    expect(formatSalary({ salary_min: 10_000, salary_max: 20_000, salary_currency: 'PLN' } as Enrichment)).toBe(
+      '10K – 20K PLN',
+    );
+  });
+});
+
+describe('cardTags', () => {
+  it('lists the stated facets in order', () => {
+    expect(
+      cardTags({
+        work_mode: 'onsite',
+        regions: ['europe'],
+        enrichment: { employment_type: 'full_time', seniority: 'senior' },
+      } as unknown as Job),
+    ).toEqual(['On-site', 'Europe', 'Full-time', 'Senior']);
+  });
+
+  // FREEHIRE-WEB-20: every caller keys its `{#each}` on the tag text, so a row carrying the
+  // same word twice does not merely look wrong — Svelte throws each_key_duplicate and the
+  // drawer stops rendering. It is reachable because WORK_MODE_LABELS holds exactly one
+  // override and REGION_LABELS does not cover the geography the LLM fallback can emit, so
+  // both facets sentence-case the same raw value and print the same word.
+  it('never repeats a tag, however two facets arrive at the same word', () => {
+    expect(cardTags({ work_mode: 'remote', regions: ['remote'] } as unknown as Job)).toEqual(['Remote']);
+  });
+});
+
+describe('summaryFacets', () => {
+  // The IR35 status rides right after the work type it qualifies, one linked value per
+  // stated status, so a posting that offers either shows both.
+  it('shows the stated IR35 status after the work type, each value a filter link', () => {
+    const facets = summaryFacets({
+      engagement: ['ir35_outside', 'ir35_inside'],
+      enrichment: { employment_type: 'contract' },
+    } as unknown as Job);
+    const labels = facets.map((f) => f.label);
+    expect(labels.indexOf('Contract terms')).toBe(labels.indexOf('Work type') + 1);
+    expect(facets.find((f) => f.label === 'Contract terms')?.values).toEqual([
+      { text: 'Outside IR35', href: '/jobs?engagement=ir35_outside' },
+      { text: 'Inside IR35', href: '/jobs?engagement=ir35_inside' },
+    ]);
+  });
+
+  it('omits the row when the posting does not say', () => {
+    const facets = summaryFacets({ engagement: [], enrichment: {} } as unknown as Job);
+    expect(facets.some((f) => f.label === 'Contract terms')).toBe(false);
+  });
+});

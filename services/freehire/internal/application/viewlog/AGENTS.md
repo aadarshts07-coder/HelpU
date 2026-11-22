@@ -1,0 +1,80 @@
+# internal/application/viewlog
+
+Parses nginx access-log lines into per-job view counts, **off the request path**.
+The read path (`GET /jobs/:slug`, `GET /api/v1/jobs/:slug`) writes no counter; the
+`cmd/rollup-views` worker feeds this package a day's log offline and applies the
+result to `jobs.view_count` + `job_daily_views`. This keeps the read cheap and
+cacheable, and — because the log carries the real client IP/UA (lost at the
+SSR→backend boundary) — lets us filter bots and cover anonymous + API uniformly.
+
+## Shape
+
+- `ParseLine(line) (Record, ok)` — one nginx `combined`-format line → `Record`
+  (IP, timestamp, method, path, status, UA, purpose). Unparseable/bad-request lines
+  → `ok=false`. The trailing `"$http_sec_purpose"` field is **optional** in the
+  pattern, so lines from before the nginx change parse unchanged; nginx's `-`
+  placeholder normalizes to empty.
+- `Classify(Record) (Signal, ok)` — a 2xx GET of `/jobs/<slug>` or its SvelteKit SPA
+  data request `/jobs/<slug>/__data.json` (`KindPage`), or `/api/v1/jobs/<slug>`
+  (`KindAPI`) → the slug; everything else ignored (a slug is one path segment, so
+  lists and sub-resources like `/similar`, `/fit` don't count).
+- **A non-empty `Sec-Purpose` is never a view.** The app sets
+  `data-sveltekit-preload-data="hover"`, so moving the pointer across a listing
+  fetches `/jobs/<slug>/__data.json` for every card it passes — each of which
+  counted, inflating `view_count` for jobs nobody opened. Any non-empty value is
+  rejected rather than matching known ones: the header exists to say "not a real
+  navigation", and an unrecognized value still says it. This is also what makes
+  Speculation Rules safe to add later — a prerender carries the same header.
+
+**Deploy order matters:** the parser must ship BEFORE the nginx `log_format`
+change. It tolerates both formats, so parser-first is a no-op until nginx catches
+up; nginx-first would feed lines the old pattern cannot match, and a day that
+parses as nothing silently counts nothing.
+- `Aggregate(reader) map[day]map[slug]Counts` — dedups by the raw `(IP, UA, slug, day)`
+  tuple (NUL-joined, no hashing), the day taken from each line's timestamp (UTC);
+  page opens from known bots are dropped, API reads are not bot-filtered.
+  `Counts` holds **two** independently-deduplicated visitor counts over that same
+  key: `Total` (either signal) and `Page` (page opens only). They are two counts,
+  not a count and a breakdown — a visitor who opens the page *and* reads the API on
+  the same day is one visitor in each, so they never sum with an API figure, and the
+  only relation between them is `Page <= Total`. Putting the signal kind into the
+  shared dedup key instead would count that visitor twice in `Total`, and `Total` is
+  `job_daily_views.uniques`, which `GET /api/v1/stats/catalog` already publishes.
+  `Page` exists because the API signal carries no bot filtering and this host's
+  traffic is mostly crawlers: it is the only one of the two safe to rank a public
+  list on (`internal/engage/socialdigest`).
+  `jobs.view_count` also accrues agent views from `internal/application/agentview`;
+  this package's `uniques` does not.
+- `RotatedFiles(dir, base)` / `LogFile.Open()` — lists rotated files (skips the live
+  `access.log`) and opens gzip transparently. `LogFile` is just a path; the worker's
+  cursor key across numeric-suffix rotation is an FNV-64 hash over the file's
+  decompressed content, computed by the worker itself.
+
+## Conventions
+
+- **Dict/heuristic only, no external calls.** Pure functions over strings + files.
+- **Bot list is deliberately small** (`bot.go`): missed bots only inflate a
+  transparency number; over-aggressive matching would drop real people.
+- **Semantics live here, not in SQL.** The worker's queries are additive plumbing;
+  what counts as a view and how it dedups is defined in this package.
+- **The worker commits a file in chunks, never whole.** Every applied row bumps
+  `jobs.view_count`, which holds that jobs row's lock until commit; one transaction per
+  file held ~1M rows for 45 minutes (nginx) plus ~1.4M for 71 (agent views) on
+  2026-10-31 and stalled every ingest write behind them. Because the apply is additive, a
+  chunk is only safe beside `view_log_cursors`: each chunk moves the file's resume key
+  (ascending `(job_id, day)`) in its own transaction, compare-and-swap, and
+  `processed_view_logs` still marks the file finished.
+- **Every reader of "how much a posting was LOOKED AT" uses `job_daily_views.page_uniques`,
+  never `uniques`.** `uniques` fuses bot-filtered page opens with UNFILTERED API reads, and
+  crawlers are most of this host's traffic, so a figure built on it reports what robots
+  fetched. The rule once lived only in `social-digest`, which is why
+  `/api/v1/stats/engagement` and the `/open` grid published 11,027,722 against the real
+  5,401,347 for months (freehire#2945). Seed the two columns to DIFFERENT totals in any test
+  that asserts on a view figure: `page_uniques` has `DEFAULT 0`, so a test seeding only
+  `uniques` passes whichever column the query reads. `page_uniques` is every VISITOR, signed
+  in or not, so it never sits beside signed-in counters without its label saying so.
+  `job_daily_views.agent_uniques` counts postings served to agents (MCP, OJCP,
+  `/agent/jobs/search`, via `internal/application/agentview`); `jobs.view_count` =
+  `uniques` + `agent_uniques`, a total-reach figure mixing people, API reads and agents (the
+  most-viewed sort and the job page show it as such). The only human-only figure is
+  `page_uniques`.

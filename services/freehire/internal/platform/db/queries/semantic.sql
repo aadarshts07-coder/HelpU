@@ -1,0 +1,236 @@
+-- name: EnqueuePendingSemanticJobs :execrows
+-- Idempotent backfill for the incremental semantic-embedding queue. Enqueues two
+-- kinds of outstanding work at the target embedder model:
+--   1. OPEN jobs whose stored vector is missing, content-stale, or model-stale —
+--      i.e. semantic_embedded_model differs from the target OR semantic_embedded_hash
+--      differs from the job's current content_hash — AND confirmed technical
+--      (is_tech IS TRUE), the same gate EnqueueJobEnrichment/EnqueuePendingJobs use
+--      (jobs.sql, enrichment.sql) so embed spend is not wasted on the undifferentiated
+--      bulk of broad crawls (which search indexes only under category "other"). Before this the gate was category-based
+--      (category <> ALL(NonTechCategories)), a deliberate "category-gated, not
+--      tech-only" design — measured 2026-07-22 at only 35% of the (now-removed)
+--      jobs_semantic Meili index's ~2.05M docs carrying an is_tech tag, i.e. the same
+--      undifferentiated bulk the facet-index and enrichment gates were tightened
+--      against.
+--   2. UNINDEXABLE jobs that still carry an embed stamp (were embedded while open and
+--      canonical) — a job now closed OR a non-canonical repost (duplicate_of set) — so
+--      the worker clears their stamp, legacy vector, and job_semantic_chunks rows
+--      (Store.CompleteClosed; there is no search index left to remove a document from —
+--      see openspec/changes/drop-hybrid-search-pgvector-similar).
+-- ON CONFLICT keeps exactly one entry per (job_id, target_model), so running this every
+-- command invocation never duplicates work. job_posted_at denormalizes
+-- COALESCE(posted_at, created_at) onto the outbox row so ClaimSemanticBatch can sort by
+-- it without joining jobs on every claim (see that query's doc comment).
+INSERT INTO semantic_outbox (job_id, target_model, job_posted_at)
+SELECT id, sqlc.arg(target_model)::text, COALESCE(posted_at, created_at)
+FROM jobs
+WHERE (
+        closed_at IS NULL AND duplicate_of IS NULL
+        AND (semantic_embedded_model IS DISTINCT FROM sqlc.arg(target_model)::text
+             OR semantic_embedded_hash IS DISTINCT FROM content_hash)
+        AND is_tech IS TRUE
+      )
+   OR ((closed_at IS NOT NULL OR duplicate_of IS NOT NULL) AND semantic_embedded_model IS NOT NULL)
+ON CONFLICT (job_id, target_model) DO NOTHING;
+
+-- name: ClaimSemanticBatch :many
+-- Claim a batch of live, unleased entries, freshest job first, by stamping claimed_at.
+-- Unlike ClaimEnrichmentBatch this does NOT filter unindexable jobs out: a closed OR
+-- non-canonical (duplicate_of) entry is the clear-state signal, so the worker must
+-- receive it and branch on `closed` (true = clear its embed state instead of embedding).
+--
+-- Orders by the outbox's OWN job_posted_at (denormalized at enqueue time from
+-- COALESCE(jobs.posted_at, jobs.created_at) — see EnqueuePendingSemanticJobs) rather
+-- than joining jobs to compute it. A join-for-ordering here means Postgres cannot push
+-- the LIMIT below the sort — it has to nested-loop-join and sort the ENTIRE claimable
+-- set before taking the batch, independent of batch_size. Measured live on prod at
+-- ~906k claimable rows: 109s for a single claim call. See
+-- openspec/changes/prod-semantic-embed-steady-state/design.md Decision 8. NULLS LAST
+-- is defensive (every row written by EnqueuePendingSemanticJobs always populates the
+-- column; this only guards a row that predates the backfill migration).
+--
+-- FOR UPDATE OF o locks only outbox rows (a bare FOR UPDATE would also lock jobs,
+-- making concurrent claim waves contend); SKIP LOCKED lets concurrent workers take
+-- disjoint rows; the lease predicate reclaims entries whose worker died (stale
+-- claimed_at), so no separate reaper process is needed.
+WITH claimable AS (
+    SELECT o.id, o.job_id
+    FROM semantic_outbox o
+    WHERE o.failed_at IS NULL
+      AND (o.claimed_at IS NULL
+           OR o.claimed_at < now() - make_interval(secs => sqlc.arg(lease_seconds)::int))
+    ORDER BY o.job_posted_at DESC NULLS LAST, o.job_id DESC
+    FOR UPDATE OF o SKIP LOCKED
+    LIMIT sqlc.arg(batch_size)
+)
+UPDATE semantic_outbox o
+SET claimed_at = now()
+-- Join jobs off the claimable CTE (not the UPDATE target o, which Postgres forbids in
+-- FROM) so the removal branch gets the job's closed flag without a second query. This
+-- join is over just the claimed batch (batch_size rows), not the whole claimable set —
+-- cheap, unlike the ordering join this replaces above.
+FROM claimable c
+JOIN jobs j ON j.id = c.job_id
+WHERE o.id = c.id
+RETURNING o.id, o.job_id, (j.closed_at IS NOT NULL OR j.duplicate_of IS NOT NULL)::boolean AS closed;
+
+-- name: GetJobsByIDs :many
+-- Batch-load persisted rows by id. Two callers: the embed worker builds documents
+-- from them (a corrupted row, SQLSTATE XX001, aborts the whole scan there; the
+-- worker then retries the batch one id at a time to isolate and dead-letter the bad
+-- row), and the /similar handler projects them to the public job wire shape.
+SELECT *
+FROM jobs_read
+WHERE id = ANY(sqlc.arg(ids)::bigint[]);
+
+-- name: StampSemanticEmbeddedBatch :exec
+-- Record that a batch of jobs' content is embedded under the given model. Run in the
+-- same transaction as DeleteSemanticEntriesBatch on the success path, so a crash between
+-- the index write and this stamp is safely retried (idempotent re-embed). The stamp
+-- copies each job's CURRENT content_hash (nullable-safe: a NULL content_hash stamps NULL
+-- so NULL IS DISTINCT FROM NULL stays false and the job is not re-enqueued forever).
+-- Caveat: if an ingest commits a new content_hash in the tiny window between the embed
+-- (which read the old content) and this stamp, the stamp records the NEW hash while the
+-- vector reflects the old one — so the enqueue predicate sees a match and does NOT
+-- re-enqueue it next run; that job carries a one-revision-stale vector until its content
+-- changes AGAIN (which re-enqueues it). The window is one embed-duration and the drift
+-- self-corrects on the next real change, so this is accepted over threading the exact
+-- embedded hash through a nullable text[] per batch.
+--
+-- semantic_embedded_input_hash is the other way round: it is the hash of the text the
+-- worker actually embedded (search.EmbedInputHash over the rows it loaded), paired with
+-- ids positionally, so it never claims a text the vectors were not computed from. It is
+-- what lets the next run tell a content_hash move that changed the embedded text from one
+-- that only moved a derived facet (see migrations/0192). Unnested WITH ORDINALITY and
+-- rejoined, like InsertJobSemanticChunks, because sqlc cannot type a multi-argument unnest.
+-- LEFT, so an id with no hash beside it is still stamped, with a NULL input hash — "not
+-- known", which only ever costs a re-embed — rather than silently not stamped at all.
+UPDATE jobs j
+SET semantic_embedded_model      = sqlc.arg(model)::text,
+    semantic_embedded_hash       = j.content_hash,
+    semantic_embedded_input_hash = h.input_hash
+FROM unnest(sqlc.arg(ids)::bigint[]) WITH ORDINALITY AS ids(id, n)
+LEFT JOIN unnest(sqlc.arg(input_hashes)::text[]) WITH ORDINALITY AS h(input_hash, n) USING (n)
+WHERE j.id = ids.id;
+
+-- name: ClearSemanticEmbeddedBatch :exec
+-- Clear a batch of jobs' embed provenance (closed-job path). Run in the same transaction
+-- as DeleteSemanticEntriesBatch and DeleteJobSemanticChunks (see that query).
+-- job_semantic_chunks is the only stored vector (jobs.semantic_embedding was dropped in 0235).
+UPDATE jobs
+SET semantic_embedded_model      = NULL,
+    semantic_embedded_hash       = NULL,
+    semantic_embedded_input_hash = NULL
+WHERE id = ANY(sqlc.arg(ids)::bigint[]);
+
+-- name: DeleteSemanticEntriesBatch :exec
+DELETE FROM semantic_outbox
+WHERE id = ANY(sqlc.arg(ids)::bigint[]);
+
+-- name: RecordSemanticFailure :one
+-- Count a failed attempt: bump attempts, record the error, and dead-letter (set
+-- failed_at) once attempts reach the max. The lease (claimed_at) is intentionally left
+-- in place — its expiry gates the retry to a later run and doubles as the crash reaper,
+-- so a failed entry is never reprocessed within the same run. Mirrors
+-- RecordEnrichmentFailure.
+UPDATE semantic_outbox
+SET attempts   = attempts + 1,
+    last_error = sqlc.arg(last_error),
+    failed_at  = CASE
+                     WHEN attempts + 1 >= sqlc.arg(max_attempts)::int THEN now()
+                     ELSE NULL
+                 END
+WHERE id = sqlc.arg(id)
+RETURNING attempts, failed_at;
+
+-- ---------------------------------------------------------------------------
+-- job_semantic_chunks: pgvector-backed per-chunk embeddings (see migration 0092
+-- and openspec/changes/drop-hybrid-search-pgvector-similar/design.md Decisions 1/5).
+-- A job's description is HTML-stripped and split into one or more chunks, each with
+-- its own vector(768) row here — replacing the single, doubly-truncated
+-- jobs.semantic_embedding vector as the queryable representation. Consumers:
+-- cmd/embed (writes, via DeleteJobSemanticChunks + InsertJobSemanticChunks or
+-- DeleteJobSemanticChunks alone for a closed job) and the Meilisearch index writers. GET /me/recommendations was removed rather than migrated
+-- to pgvector (see drop-hybrid-search-pgvector-similar's Context: "Mid-implementation
+-- reversal"); it never got a caller.
+-- ---------------------------------------------------------------------------
+
+-- name: DeleteJobSemanticChunks :exec
+-- Remove every chunk row for a BATCH of jobs in one round trip — mirrors every other
+-- batch mutation in this file (StampSemanticEmbeddedBatch, ClearSemanticEmbeddedBatch,
+-- DeleteSemanticEntriesBatch), all one `WHERE id = ANY($1)`
+-- call rather than one call per job: this pipeline was historically bottlenecked by
+-- per-row Postgres round trips during a bulk backfill, not by GPU/TEI throughput, and
+-- the upcoming full-catalogue re-embed (openspec/changes/
+-- drop-hybrid-search-pgvector-similar, ~1.6-2M jobs) would reintroduce exactly that
+-- regression at EMBED_BATCH_SIZE (default 500) deletes per transaction if this looped
+-- per job instead. Two callers, both batched: the open-job re-embed path issues ONE
+-- call for the whole wave's job ids immediately before the per-job
+-- InsertJobSemanticChunks loop, in the same transaction (a job's chunk COUNT can change
+-- between embeds — the source text was re-chunked — so there is no stable
+-- per-chunk_index UPDATE target, "replace" has to be delete-then-insert, not an
+-- upsert); the closed-job path issues ONE call for its whole batch alone, actually
+-- mirroring ClearSemanticEmbeddedBatch's own batched round-trip shape, not just its
+-- clear semantics. ON DELETE CASCADE from jobs already covers a hard delete
+-- — this query is for the two soft paths cascade doesn't reach.
+DELETE FROM job_semantic_chunks
+WHERE job_id = ANY(sqlc.arg(job_ids)::bigint[]);
+
+-- name: InsertJobSemanticChunks :exec
+-- Batch-insert EVERY job's freshly-embedded chunks in the wave in one round trip, not
+-- one call per job: job_ids/chunk_indices/embeddings are positionally paired parallel
+-- arrays FLATTENED across the whole batch (one element per chunk, not per job — a job
+-- contributing 3 chunks repeats its id 3 times at the matching offsets) — unnested
+-- separately and rejoined WITH ORDINALITY because sqlc cannot infer the types of a
+-- multi-argument unnest over query parameters. embeddings travels as vector literal TEXT (e.g. "[0.1,0.2,...]"),
+-- not a native vector(768)[] array: pgx's driver.Valuer/sql.Scanner fallback for
+-- pgvector.Vector (this repo registers no custom OID codec for it) only covers a
+-- single scalar column value, not an array of them, so each element casts to
+-- vector(768) individually in the SELECT instead. Always run immediately after
+-- DeleteJobSemanticChunks in the same transaction as the embed stamp — see that
+-- query's comment.
+--
+-- One call for the whole wave, not one per job, for the same reason
+-- DeleteJobSemanticChunks/StampSemanticEmbeddedBatch already are: a per-job round trip
+-- here was exactly what made a prior HF GPU bulk-embed Postgres-bound instead of
+-- GPU-bound (~19 docs/s against a GPU embedding a wave in ~7s) — see
+-- hire-semantic-vectors-in-pg's "THE REAL BOTTLENECK IS POSTGRES, NOT THE GPU" note.
+INSERT INTO job_semantic_chunks (job_id, chunk_index, embedding)
+SELECT ids.job_id, idx.chunk_index, emb.embedding::vector(768)
+FROM unnest(sqlc.arg(job_ids)::bigint[]) WITH ORDINALITY AS ids(job_id, n)
+JOIN unnest(sqlc.arg(chunk_indices)::smallint[]) WITH ORDINALITY AS idx(chunk_index, n) USING (n)
+JOIN unnest(sqlc.arg(embeddings)::text[]) WITH ORDINALITY AS emb(embedding, n) USING (n);
+
+-- name: SemanticCoverageCounts :one
+-- How much of the catalogue carries a current embedding, for the public
+-- embedding-progress page (openspec/changes/embedding-progress-page). "Eligible" is
+-- the first branch of EnqueuePendingSemanticJobs' predicate without its staleness
+-- test, and "covered" is that branch negated — so a posting is exactly one of covered
+-- or queueable, and the queue's claimable depth is the uncovered remainder. Keep the
+-- two in step: a gate added there and not here makes the page count postings nothing
+-- will ever embed.
+--
+-- NOT is_private, unlike the enqueue: a private posting is one user's pasted JD and must
+-- not change a figure published to everyone else (private_job_rule_test). The queue
+-- still carries the few private rows being embedded, so eligible − queued undercounts
+-- coverage by that handful — the direction the page can afford.
+--
+-- A scan over every open posting: measured on production 2026-10-19 it did not finish
+-- inside 60s on a loaded host. It runs in cmd/rollup-stats, never on a request path.
+SELECT
+    count(*)::bigint AS eligible,
+    count(*) FILTER (
+        WHERE semantic_embedded_model = sqlc.arg(target_model)::text
+          AND semantic_embedded_hash IS NOT DISTINCT FROM content_hash
+    )::bigint AS covered
+FROM jobs
+WHERE closed_at IS NULL AND duplicate_of IS NULL AND is_tech IS TRUE AND NOT is_private;
+
+-- name: SemanticOutboxClaimableDepth :one
+-- The work left in semantic_outbox: rows a worker can still claim. A dead letter is
+-- not work left, it is work given up on. Reads semantic_outbox_claimable_idx (partial
+-- on failed_at IS NULL), 4.5ms on production — cheap enough for cmd/server to sample
+-- every 15s, which SemanticOutboxMetrics (a full scan for dead letters and the
+-- oldest row as well) is not meant for.
+SELECT count(*)::bigint FROM semantic_outbox WHERE failed_at IS NULL;
+

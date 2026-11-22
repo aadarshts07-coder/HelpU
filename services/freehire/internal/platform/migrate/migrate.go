@@ -1,0 +1,527 @@
+// Package migrate is the versioned migration runner for migrations/*.sql.
+//
+// A schema_migrations table (version TEXT PK = the filename, so duplicate number prefixes
+// like 0009x2 are harmless) records applied files; each runs in one transaction under a
+// session advisory lock.
+//
+// When schema_migrations is empty but the jobs table exists (an initdb- or hand-migrated
+// volume), the run baselines: it records every on-disk migration without executing it.
+// On a truly empty database every migration is applied in order.
+package migrate
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// noTxMarker, as the WHOLE content of a comment line in a migration's leading comment
+// block, opts the file out of the per-migration transaction (for CREATE INDEX CONCURRENTLY
+// and the like).
+//
+// The file then runs one statement at a time (see splitStatements). The applied-record
+// insert is outside any transaction too, so a failure can leave the file executed but
+// unrecorded: such files must be idempotent (IF NOT EXISTS / IF EXISTS).
+const noTxMarker = "migrate: no-transaction"
+
+// advisoryLockKey serializes concurrent migrate runs. It must not collide with the project's
+// other advisory-lock users; read this list before picking a new key. The non-blocking keys of
+// the cron workers are constants in internal/platform/worker/lock.go, taken through
+// worker.TryLock:
+//
+//	728391      internal/platform/migrate     — this one, a blocking pg_advisory_lock
+//	0x66686c76  cmd/liveness         — "fhlv", a non-blocking pg_try_advisory_lock
+//	0x66686763  cmd/ghost-crosscheck — "fhgc", likewise
+//	0x66687363  cmd/ingest-scheduler — "fhsc", likewise; it makes the fleet's concurrency
+//	                                   cap atomic, which a check-then-act pair is not
+//	0x66686978  internal/platform/worker — "fhix", likewise; ONE catalogue-wide index job at
+//	                                   a time (full rebuild, marker passes, suggestion
+//	                                   build). A clock-based schedule could not keep them
+//	                                   apart once the rebuild grew past its window
+//	0x66687277  cmd/billing-sync     — "fhrw", likewise; it serializes the referral grant
+//	                                   pass, so the per-referrer reward ceiling is a bound
+//	                                   rather than a suggestion. A count read in one
+//	                                   statement and acted on in another is not atomic under
+//	                                   READ COMMITTED, whichever statement holds it
+//	0x66686372  internal/job/companyrelation — "fhcr", a blocking pg_advisory_xact_lock; one
+//	                                   company-relation approval at a time, so two decisions
+//	                                   checked against the same registry cannot both pass and
+//	                                   together make the chain neither would alone
+//	0x66687470  internal/platform/testdb — "fhtp", a blocking pg_advisory_lock on the TEST
+//	                                   server only; one integration-test binary builds the
+//	                                   shared template while the others wait for it
+//	hashtextextended('assistant_session_create:<user id>')
+//	            internal/api/handler — a blocking pg_advisory_xact_lock per account; one
+//	                                   support-session create at a time, so reusing the
+//	                                   empty session is not a check-then-insert race
+//	hashtextextended('resume_upload:<user id>')
+//	            internal/candidate/resume — a blocking pg_advisory_xact_lock per account
+//	                                   around the CV pointer write (never the object
+//	                                   upload); a first-CV-only upload cannot interleave
+//	                                   with another upload or a delete
+const advisoryLockKey int64 = 728391
+
+// lockTimeout bounds how long a migration may WAIT for a lock, not how long a statement
+// holds one.
+//
+// Postgres queues lock requests, so an `ALTER TABLE` waiting for ACCESS EXCLUSIVE (say,
+// behind the nightly pg_dump) blocks every reader that arrives after it. Failing is the
+// right outcome: release.sh aborts with the live colour untouched and the operator retries.
+const lockTimeout = "5s"
+
+// Migration is one migrations/*.sql file. Version is the filename, unique by construction.
+type Migration struct {
+	Version string
+	SQL     string
+	// NoTx reports the file carries the noTxMarker and must run outside a
+	// transaction.
+	NoTx bool
+}
+
+// Load reads dir's *.sql files in lexicographic filename order — the same order
+// Postgres initdb applies them on a fresh volume.
+func Load(dir string) ([]Migration, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read migrations dir: %w", err)
+	}
+
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+
+	migs := make([]Migration, 0, len(names))
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", name, err)
+		}
+		sql := string(data)
+		migs = append(migs, Migration{Version: name, SQL: sql, NoTx: hasNoTxMarker(sql)})
+	}
+	return migs, nil
+}
+
+// hasNoTxMarker reports whether the file DECLARES the marker in its leading comment block
+// (blank lines and -- comments before the first statement).
+//
+// The marker must be the whole content of its comment line: with strings.Contains, a header
+// that merely mentioned the marker (migrations/0126) would opt out.
+//
+// scripts/check-migrations.mjs repeats this rule; the two must agree.
+func hasNoTxMarker(sql string) bool {
+	for _, line := range strings.Split(sql, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "--") {
+			return false
+		}
+		if strings.TrimSpace(strings.TrimPrefix(line, "--")) == noTxMarker {
+			return true
+		}
+	}
+	return false
+}
+
+// splitStatements cuts a migration into its top-level statements, on semicolons that are
+// not inside a string, a dollar-quoted body, a quoted identifier, or a comment. Whitespace
+// and comments are carried with the statement that follows them; a trailing fragment
+// containing no statement is dropped.
+//
+// pgx sends a whole file as one simple-protocol Exec, which Postgres runs as ONE implicit
+// transaction, so the no-transaction marker needs per-statement execution. This is a
+// splitter, not a parser: the four quoting forms handled are the only ones that hide a
+// semicolon.
+func splitStatements(sql string) []string {
+	var (
+		out   []string
+		start int
+	)
+	for i := 0; i < len(sql); i++ {
+		switch {
+		case strings.HasPrefix(sql[i:], "--"):
+			if end := strings.IndexByte(sql[i:], '\n'); end >= 0 {
+				i += end
+			} else {
+				i = len(sql)
+			}
+		case strings.HasPrefix(sql[i:], "/*"):
+			// Postgres nests block comments, so this counts depth rather than
+			// stopping at the first close.
+			depth, j := 1, i+2
+			for j < len(sql) && depth > 0 {
+				switch {
+				case strings.HasPrefix(sql[j:], "/*"):
+					depth++
+					j += 2
+				case strings.HasPrefix(sql[j:], "*/"):
+					depth--
+					j += 2
+				default:
+					j++
+				}
+			}
+			i = j - 1
+		case sql[i] == '\'':
+			i = closeQuoted(sql, i, '\'')
+		case sql[i] == '"':
+			i = closeQuoted(sql, i, '"')
+		case sql[i] == '$':
+			if tag, after, ok := dollarTag(sql, i); ok {
+				if end := strings.Index(sql[after:], tag); end >= 0 {
+					i = after + end + len(tag) - 1
+				} else {
+					i = len(sql)
+				}
+			}
+		case sql[i] == ';':
+			if s := sql[start:i]; hasStatement(s) {
+				out = append(out, s)
+			}
+			start = i + 1
+		}
+	}
+	// start never passes len(sql): only the ';' branch writes it, at an index inside the string.
+	if tail := sql[start:]; hasStatement(tail) {
+		out = append(out, tail)
+	}
+	return out
+}
+
+// closeQuoted returns the index of the closing quote for the literal or identifier opening
+// at i. A doubled quote is an escaped one and does not close.
+func closeQuoted(sql string, i int, quote byte) int {
+	for j := i + 1; j < len(sql); j++ {
+		if sql[j] != quote {
+			continue
+		}
+		if j+1 < len(sql) && sql[j+1] == quote {
+			j++
+			continue
+		}
+		return j
+	}
+	return len(sql)
+}
+
+// dollarTag reads a dollar-quote opener at i ($$ or $tag$), returning the tag to look for
+// and the index just past the opener. A '$' that opens no tag (a positional parameter, or
+// a '$' inside an identifier) reports ok=false.
+func dollarTag(sql string, i int) (tag string, after int, ok bool) {
+	for j := i + 1; j < len(sql); j++ {
+		c := sql[j]
+		if c == '$' {
+			return sql[i : j+1], j + 1, true
+		}
+		if !tagByte(c, j == i+1) {
+			return "", 0, false
+		}
+	}
+	return "", 0, false
+}
+
+// tagByte reports whether c may appear in a dollar-quote tag. A tag may not START with a
+// digit, which is what separates $1 (a positional parameter) from $t1$ (a tag).
+func tagByte(c byte, first bool) bool {
+	if c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+		return true
+	}
+	return !first && c >= '0' && c <= '9'
+}
+
+// hasStatement reports whether a fragment carries anything but whitespace and comments.
+func hasStatement(fragment string) bool {
+	for _, line := range strings.Split(fragment, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "--") {
+			return true
+		}
+	}
+	return false
+}
+
+// plan is one run's work: baseline records versions without executing them,
+// apply executes then records.
+type plan struct {
+	baseline []Migration
+	apply    []Migration
+}
+
+// decide routes every unapplied migration to baseline or apply. legacySchema
+// (schema_migrations empty but the jobs table present) means the database
+// predates the runner, so on-disk files are already in effect and must only be
+// recorded; forceBaseline is the operator's explicit -baseline flag.
+func decide(migs []Migration, applied map[string]bool, legacySchema, forceBaseline bool) plan {
+	var p plan
+	for _, m := range migs {
+		if applied[m.Version] {
+			continue
+		}
+		if legacySchema || forceBaseline {
+			p.baseline = append(p.baseline, m)
+		} else {
+			p.apply = append(p.apply, m)
+		}
+	}
+	return p
+}
+
+// Runner applies migrations against a Postgres pool.
+type Runner struct {
+	pool *pgxpool.Pool
+}
+
+// NewRunner returns a Runner applying migrations through pool.
+func NewRunner(pool *pgxpool.Pool) *Runner {
+	return &Runner{pool: pool}
+}
+
+// Run brings the database up to date with migs. forceBaseline records every
+// unapplied migration without executing it (operator bootstrap of a database
+// whose schema is already current). It returns the versions baselined and
+// applied, in order.
+func (r *Runner) Run(ctx context.Context, migs []Migration, forceBaseline bool) (baselined, applied []string, err error) {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", advisoryLockKey); err != nil {
+		return nil, nil, fmt.Errorf("advisory lock: %w", err)
+	}
+	defer func() {
+		// Best-effort release; the lock is session-scoped and dies with the
+		// connection anyway.
+		if _, err := conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", advisoryLockKey); err != nil {
+			log.Printf("migrate: advisory unlock: %v", err)
+		}
+	}()
+
+	// Set after the advisory lock on purpose: a second run should WAIT for that lock (it blocks
+	// nobody), while every table lock below is bounded. Session-level, so it covers no-tx files.
+	if _, err := conn.Exec(ctx, "SET lock_timeout = '"+lockTimeout+"'"); err != nil {
+		return nil, nil, fmt.Errorf("set lock_timeout: %w", err)
+	}
+
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS public.schema_migrations (
+    version text PRIMARY KEY,
+    applied_at timestamptz NOT NULL DEFAULT now()
+)`); err != nil {
+		return nil, nil, fmt.Errorf("ensure schema_migrations: %w", err)
+	}
+
+	appliedSet, err := appliedVersions(ctx, conn)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	legacy := false
+	if len(appliedSet) == 0 {
+		legacy, err = hasJobsTable(ctx, conn)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	p := decide(migs, appliedSet, legacy, forceBaseline)
+	for v := range appliedSet {
+		if !onDisk(migs, v) {
+			log.Printf("migrate: %s recorded as applied but missing on disk", v)
+		}
+	}
+
+	if len(p.baseline) > 0 {
+		if err := recordBaseline(ctx, conn, p.baseline); err != nil {
+			return nil, nil, err
+		}
+		for _, m := range p.baseline {
+			baselined = append(baselined, m.Version)
+		}
+		if legacy && !forceBaseline {
+			log.Printf("migrate: existing schema without schema_migrations — baselined %d migration(s)", len(p.baseline))
+		}
+	}
+
+	for _, m := range p.apply {
+		if err := applyOne(ctx, conn, m); err != nil {
+			return baselined, applied, err
+		}
+		applied = append(applied, m.Version)
+		log.Printf("migrate: applied %s", m.Version)
+		// initdb gives each file its own session, and files rely on it (0001 empties search_path).
+		// DISCARD TEMP drops pg_temp leftovers (DISCARD ALL would release the advisory lock);
+		// RESET ALL drops lock_timeout too, so it is set again.
+		if _, err := conn.Exec(ctx, "DISCARD TEMP; RESET ALL; SET lock_timeout = '"+lockTimeout+"'"); err != nil {
+			return baselined, applied, fmt.Errorf("reset session after %s: %w", m.Version, err)
+		}
+	}
+	return baselined, applied, nil
+}
+
+// applyOne executes one migration and records it, atomically unless the file
+// opted out of transactions.
+func applyOne(ctx context.Context, conn *pgxpool.Conn, m Migration) error {
+	if m.NoTx {
+		return applyNoTx(ctx, conn, m)
+	}
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin %s: %w", m.Version, err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, m.SQL); err != nil {
+		return fmt.Errorf("apply %s: %w", m.Version, err)
+	}
+	if _, err := tx.Exec(ctx, "INSERT INTO public.schema_migrations (version) VALUES ($1)", m.Version); err != nil {
+		return fmt.Errorf("record %s: %w", m.Version, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit %s: %w", m.Version, err)
+	}
+	return nil
+}
+
+// applyNoTx executes a no-transaction migration one statement at a time and records it.
+//
+// Each statement gets its own implicit transaction, which is what a CONCURRENTLY statement
+// needs and what keeps NOT VALID and VALIDATE CONSTRAINT from sharing one ACCESS EXCLUSIVE
+// lock across the whole scan.
+//
+// A failure part-way leaves the file executed but unrecorded, hence the idempotency rule.
+func applyNoTx(ctx context.Context, conn *pgxpool.Conn, m Migration) error {
+	for _, stmt := range splitStatements(m.SQL) {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("apply %s: %w", m.Version, err)
+		}
+	}
+
+	// A successful CREATE INDEX CONCURRENTLY is not proof of a usable index: lockTimeout can
+	// abort its wait (55P03) and leave indisvalid=f. The first run fails loudly, but a re-run
+	// with IF NOT EXISTS sees the carcass, succeeds, and records the version.
+	//
+	// So check whether any index THIS FILE NAMES is invalid, not a before/after diff (the
+	// carcass is in both snapshots); that also ignores other files' older carcasses.
+	broke, err := invalidIndexesNamedIn(ctx, conn, m.SQL)
+	if err != nil {
+		return fmt.Errorf("read index validity after %s: %w", m.Version, err)
+	}
+	if len(broke) > 0 {
+		return fmt.Errorf("apply %s: %s left invalid (indisvalid=f) — DROP INDEX and re-run; the version was NOT recorded",
+			m.Version, strings.Join(broke, ", "))
+	}
+
+	if _, err := conn.Exec(ctx, "INSERT INTO public.schema_migrations (version) VALUES ($1)", m.Version); err != nil {
+		return fmt.Errorf("record %s: %w", m.Version, err)
+	}
+	return nil
+}
+
+// invalidIndexesNamedIn returns the invalid indexes whose name appears as a word in sql,
+// sorted. Matching on the file's own text is coarse but exact where it matters: a
+// CONCURRENTLY file names the index it builds, and no other file's carcass is named here.
+func invalidIndexesNamedIn(ctx context.Context, conn *pgxpool.Conn, sql string) ([]string, error) {
+	rows, err := conn.Query(ctx,
+		`SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE NOT i.indisvalid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		if namesIdentifier(sql, name) {
+			out = append(out, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// namesIdentifier reports whether sql mentions name as a whole identifier, so a short index
+// name is not matched inside a longer one. Case-insensitive because Postgres folds an
+// unquoted identifier to lower case.
+//
+// The regexp is compiled per call on purpose: this runs a handful of times a year.
+func namesIdentifier(sql, name string) bool {
+	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(name) + `\b`).MatchString(sql)
+}
+
+// appliedVersions reads the recorded versions.
+func appliedVersions(ctx context.Context, conn *pgxpool.Conn) (map[string]bool, error) {
+	rows, err := conn.Query(ctx, "SELECT version FROM public.schema_migrations")
+	if err != nil {
+		return nil, fmt.Errorf("read schema_migrations: %w", err)
+	}
+	versions, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read schema_migrations: %w", err)
+	}
+	set := make(map[string]bool, len(versions))
+	for _, v := range versions {
+		set[v] = true
+	}
+	return set, nil
+}
+
+// hasJobsTable reports whether the core schema exists, the signal that the database
+// predates the runner and must be baselined, not replayed.
+func hasJobsTable(ctx context.Context, conn *pgxpool.Conn) (bool, error) {
+	var regclass *string
+	if err := conn.QueryRow(ctx, "SELECT to_regclass('public.jobs')::text").Scan(&regclass); err != nil {
+		return false, fmt.Errorf("probe jobs table: %w", err)
+	}
+	return regclass != nil, nil
+}
+
+// recordBaseline inserts versions in one transaction.
+func recordBaseline(ctx context.Context, conn *pgxpool.Conn, migs []Migration) error {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin baseline: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	for _, m := range migs {
+		if _, err := tx.Exec(ctx, "INSERT INTO public.schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING", m.Version); err != nil {
+			return fmt.Errorf("baseline %s: %w", m.Version, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit baseline: %w", err)
+	}
+	return nil
+}
+
+// onDisk reports whether version is among the loaded migrations.
+func onDisk(migs []Migration, version string) bool {
+	for _, m := range migs {
+		if m.Version == version {
+			return true
+		}
+	}
+	return false
+}

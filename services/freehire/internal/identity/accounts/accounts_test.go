@@ -1,0 +1,688 @@
+package accounts
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// fakeRepo is a test double for Repository.
+// It records calls and returns canned responses.
+type fakeRepo struct {
+	mu sync.Mutex
+
+	// UserIDByIdentity responses: looked up in order per call
+	identityResults []idResult
+	identityCallIdx int
+
+	// LinkOrCreateByEmail responses: looked up in order per call
+	linkResults []linkResult
+	linkCallIdx int
+
+	// recorded calls
+	linkCalls []linkCall
+
+	// CreateUser responses and calls
+	createUserResults []createUserResult
+	createUserCallIdx int
+	createUserCalls   []createUserCall
+
+	// UpdateTimezone responses and calls
+	updateTimezoneResults []updateTimezoneResult
+	updateTimezoneCallIdx int
+	updateTimezoneCalls   []updateTimezoneCall
+
+	// UpdateLanguage responses and calls
+	updateLanguageResults []updateLanguageResult
+	updateLanguageCallIdx int
+	updateLanguageCalls   []updateLanguageCall
+
+	// UserByEmail responses
+	userByEmailResults []userByEmailResult
+	userByEmailCallIdx int
+
+	// UserByID responses
+	userByIDResults []userByIDResult
+	userByIDCallIdx int
+
+	// markedVerified records that MarkEmailVerified was called.
+	markedVerified bool
+
+	// setHash / resetHash record the hash each password path stored;
+	// setPasswordVersion is the generation SetPassword reports back.
+	setHash            string
+	resetHash          string
+	setPasswordVersion int32
+
+	// changedEmail records the address ChangeEmail moved the account to; changeEmailErr
+	// is what it answers instead, when set.
+	changedEmail   string
+	changeEmailErr error
+
+	// deletedOAuthGrantsForUser records every userID DeleteOAuthGrantsByUser was
+	// called with, in call order.
+	deletedOAuthGrantsForUser []int64
+
+	// Username state (for EnsureUsername/ClaimUsername tests): usernameByUser
+	// holds each account's current username row; takenUsernames maps a claimed
+	// name back to its owning user id, across all accounts, to simulate
+	// collisions between different users. usernameByUserErrOnRecheck, when set,
+	// is returned starting from the SECOND UsernameByUser call onward — the
+	// first call is always the real "does this account already have one" check;
+	// later calls are the post-collision re-read EnsureUsernameFromBase makes,
+	// which is what a test for a re-read failure needs to fail instead.
+	usernameByUser             map[int64]fakeUsernameRow
+	takenUsernames             map[string]int64
+	usernameByUserCalls        int
+	usernameByUserErrOnRecheck error
+}
+
+type fakeUsernameRow struct {
+	name      string
+	updatedAt *time.Time
+}
+
+type idResult struct {
+	id  int64
+	err error
+}
+
+type linkResult struct {
+	id  int64
+	err error
+}
+
+type linkCall struct {
+	provider       string
+	providerUserID string
+	email          string
+}
+
+type createUserResult struct {
+	user User
+	err  error
+}
+
+type createUserCall struct {
+	email         string
+	passwordHash  string
+	emailVerified bool
+	timezone      *string
+}
+
+type updateTimezoneResult struct {
+	user User
+	err  error
+}
+
+type updateTimezoneCall struct {
+	userID   int64
+	timezone *string
+}
+
+type updateLanguageResult struct {
+	user User
+	err  error
+}
+
+type updateLanguageCall struct {
+	userID   int64
+	language string
+}
+
+type userByEmailResult struct {
+	user         User
+	passwordHash string
+	hasPassword  bool
+	err          error
+}
+
+type userByIDResult struct {
+	user User
+	err  error
+}
+
+func (f *fakeRepo) WithTx(tx pgx.Tx) Repository {
+	return f
+}
+
+func (f *fakeRepo) UserIDByIdentity(_ context.Context, provider, providerUserID string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.identityCallIdx >= len(f.identityResults) {
+		return 0, ErrIdentityNotFound
+	}
+	r := f.identityResults[f.identityCallIdx]
+	f.identityCallIdx++
+	return r.id, r.err
+}
+
+func (f *fakeRepo) LinkOrCreateByEmail(_ context.Context, provider, providerUserID, email string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.linkCalls = append(f.linkCalls, linkCall{provider, providerUserID, email})
+	if f.linkCallIdx >= len(f.linkResults) {
+		return 0, errors.New("fakeRepo: unexpected LinkOrCreateByEmail call")
+	}
+	r := f.linkResults[f.linkCallIdx]
+	f.linkCallIdx++
+	return r.id, r.err
+}
+
+func (f *fakeRepo) CreateUser(_ context.Context, email, passwordHash string, emailVerified bool, timezone *string) (User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createUserCalls = append(f.createUserCalls, createUserCall{email, passwordHash, emailVerified, timezone})
+	if f.createUserCallIdx >= len(f.createUserResults) {
+		return User{}, errors.New("fakeRepo: unexpected CreateUser call")
+	}
+	r := f.createUserResults[f.createUserCallIdx]
+	f.createUserCallIdx++
+	return r.user, r.err
+}
+
+func (f *fakeRepo) UpdateTimezone(_ context.Context, userID int64, timezone *string, _ bool) (User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updateTimezoneCalls = append(f.updateTimezoneCalls, updateTimezoneCall{userID, timezone})
+	if f.updateTimezoneCallIdx >= len(f.updateTimezoneResults) {
+		return User{}, errors.New("fakeRepo: unexpected UpdateTimezone call")
+	}
+	r := f.updateTimezoneResults[f.updateTimezoneCallIdx]
+	f.updateTimezoneCallIdx++
+	return r.user, r.err
+}
+
+func (f *fakeRepo) UpdateLanguage(_ context.Context, userID int64, language string) (User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updateLanguageCalls = append(f.updateLanguageCalls, updateLanguageCall{userID, language})
+	if f.updateLanguageCallIdx >= len(f.updateLanguageResults) {
+		return User{}, errors.New("fakeRepo: unexpected UpdateLanguage call")
+	}
+	r := f.updateLanguageResults[f.updateLanguageCallIdx]
+	f.updateLanguageCallIdx++
+	return r.user, r.err
+}
+
+func (f *fakeRepo) UserByEmail(_ context.Context, email string) (User, string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.userByEmailResults) == 0 {
+		return User{}, "", false, ErrUserNotFound
+	}
+	idx := f.userByEmailCallIdx
+	if idx >= len(f.userByEmailResults) {
+		idx = len(f.userByEmailResults) - 1
+	} else {
+		f.userByEmailCallIdx++
+	}
+	r := f.userByEmailResults[idx]
+	return r.user, r.passwordHash, r.hasPassword, r.err
+}
+
+func (f *fakeRepo) MarkEmailVerified(_ context.Context, _ int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.markedVerified = true
+	return nil
+}
+
+func (f *fakeRepo) PasswordHash(_ context.Context, _ int64) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.userByEmailResults) == 0 {
+		return "", false, ErrUserNotFound
+	}
+	idx := f.userByEmailCallIdx
+	if idx >= len(f.userByEmailResults) {
+		idx = len(f.userByEmailResults) - 1
+	} else {
+		f.userByEmailCallIdx++
+	}
+	r := f.userByEmailResults[idx]
+	return r.passwordHash, r.hasPassword, r.err
+}
+
+func (f *fakeRepo) SetPassword(_ context.Context, _ int64, passwordHash string) (int32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setHash = passwordHash
+	return f.setPasswordVersion, nil
+}
+
+func (f *fakeRepo) ResetPassword(_ context.Context, _ int64, passwordHash string) (int32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resetHash = passwordHash
+	return f.setPasswordVersion, nil
+}
+
+func (f *fakeRepo) ChangeEmail(_ context.Context, _ int64, email string) (int32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.changeEmailErr != nil {
+		return 0, f.changeEmailErr
+	}
+	f.changedEmail = email
+	return f.setPasswordVersion, nil
+}
+
+func (f *fakeRepo) DeleteOAuthGrantsByUser(_ context.Context, userID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedOAuthGrantsForUser = append(f.deletedOAuthGrantsForUser, userID)
+	return nil
+}
+
+func (f *fakeRepo) UserByID(_ context.Context, id int64) (User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.userByIDCallIdx >= len(f.userByIDResults) {
+		return User{}, ErrUserNotFound
+	}
+	r := f.userByIDResults[f.userByIDCallIdx]
+	f.userByIDCallIdx++
+	return r.user, r.err
+}
+
+// fakeHasher is a test double for PasswordHasher.
+// Hash returns "hashed:"+plain; Check returns nil iff hash == "hashed:"+plain.
+type fakeHasher struct {
+	mu         sync.Mutex
+	hashCalls  int
+	checkCalls int
+}
+
+func (h *fakeHasher) Hash(plain string) (string, error) {
+	h.mu.Lock()
+	h.hashCalls++
+	h.mu.Unlock()
+	return "hashed:" + plain, nil
+}
+
+func (h *fakeHasher) Check(hash, plain string) error {
+	h.mu.Lock()
+	h.checkCalls++
+	h.mu.Unlock()
+	if hash == "hashed:"+plain {
+		return nil
+	}
+	return errors.New("fakeHasher: password mismatch")
+}
+
+// ---------------------------------------------------------------------------
+// OAuth tests (existing, updated to New(repo, hasher) signature)
+// ---------------------------------------------------------------------------
+
+// (a) identity found → returns that id; LinkOrCreateByEmail NOT called.
+func TestResolveOAuthAccount_IdentityFound(t *testing.T) {
+	repo := &fakeRepo{
+		identityResults: []idResult{{id: 7, err: nil}},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	id, err := svc.ResolveOAuthAccount(context.Background(), "google", "gid-1", "user@example.com", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != 7 {
+		t.Errorf("want id=7, got %d", id)
+	}
+	if len(repo.linkCalls) != 0 {
+		t.Errorf("LinkOrCreateByEmail should NOT be called, got %d calls", len(repo.linkCalls))
+	}
+}
+
+// (b) not found + emailVerified=true + non-empty email → LinkOrCreateByEmail called
+// with the LOWER/trimmed email, returns its id.
+func TestResolveOAuthAccount_LinkOrCreate(t *testing.T) {
+	repo := &fakeRepo{
+		identityResults: []idResult{{id: 0, err: ErrIdentityNotFound}},
+		linkResults:     []linkResult{{id: 99, err: nil}},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	id, err := svc.ResolveOAuthAccount(context.Background(), "github", "ghid-2", "  USER@Example.COM  ", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != 99 {
+		t.Errorf("want id=99, got %d", id)
+	}
+	if len(repo.linkCalls) != 1 {
+		t.Fatalf("want 1 LinkOrCreateByEmail call, got %d", len(repo.linkCalls))
+	}
+	got := repo.linkCalls[0]
+	if got.email != "user@example.com" {
+		t.Errorf("email not normalized: want %q, got %q", "user@example.com", got.email)
+	}
+	if got.provider != "github" || got.providerUserID != "ghid-2" {
+		t.Errorf("provider args wrong: %+v", got)
+	}
+}
+
+// (c) not found + emailVerified=false → ErrNoVerifiedEmail; LinkOrCreateByEmail NOT called.
+func TestResolveOAuthAccount_UnverifiedEmail(t *testing.T) {
+	repo := &fakeRepo{
+		identityResults: []idResult{{id: 0, err: ErrIdentityNotFound}},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	_, err := svc.ResolveOAuthAccount(context.Background(), "google", "gid-3", "user@example.com", false)
+	if !errors.Is(err, ErrNoVerifiedEmail) {
+		t.Errorf("want ErrNoVerifiedEmail, got %v", err)
+	}
+	if len(repo.linkCalls) != 0 {
+		t.Errorf("LinkOrCreateByEmail should NOT be called, got %d calls", len(repo.linkCalls))
+	}
+}
+
+// (d) not found + empty/whitespace email (even if emailVerified=true) → ErrNoVerifiedEmail; not called.
+func TestResolveOAuthAccount_EmptyEmail(t *testing.T) {
+	for _, email := range []string{"", "   ", "\t"} {
+		repo := &fakeRepo{
+			identityResults: []idResult{{id: 0, err: ErrIdentityNotFound}},
+		}
+		svc := New(repo, &fakeHasher{})
+
+		_, err := svc.ResolveOAuthAccount(context.Background(), "google", "gid-4", email, true)
+		if !errors.Is(err, ErrNoVerifiedEmail) {
+			t.Errorf("email=%q: want ErrNoVerifiedEmail, got %v", email, err)
+		}
+		if len(repo.linkCalls) != 0 {
+			t.Errorf("email=%q: LinkOrCreateByEmail should NOT be called", email)
+		}
+	}
+}
+
+// (e) race: LinkOrCreateByEmail returns ErrIdentityConflict,
+// follow-up UserIDByIdentity returns id 42 → service returns 42.
+func TestResolveOAuthAccount_Race_ReturnsWinner(t *testing.T) {
+	repo := &fakeRepo{
+		identityResults: []idResult{
+			{id: 0, err: ErrIdentityNotFound}, // first lookup misses
+			{id: 42, err: nil},                // retry after conflict finds the winner
+		},
+		linkResults: []linkResult{
+			{id: 0, err: ErrIdentityConflict},
+		},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	id, err := svc.ResolveOAuthAccount(context.Background(), "google", "gid-5", "winner@example.com", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != 42 {
+		t.Errorf("want id=42, got %d", id)
+	}
+}
+
+// (f) race retry still ErrIdentityNotFound → service returns a non-nil error.
+func TestResolveOAuthAccount_Race_RetryFails(t *testing.T) {
+	repo := &fakeRepo{
+		identityResults: []idResult{
+			{id: 0, err: ErrIdentityNotFound}, // first lookup misses
+			{id: 0, err: ErrIdentityNotFound}, // retry also misses
+		},
+		linkResults: []linkResult{
+			{id: 0, err: ErrIdentityConflict},
+		},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	_, err := svc.ResolveOAuthAccount(context.Background(), "google", "gid-6", "ghost@example.com", true)
+	if err == nil {
+		t.Fatal("want non-nil error when race retry also returns ErrIdentityNotFound")
+	}
+}
+
+// (g) email race: a concurrent callback for the SAME verified email under a
+// DIFFERENT identity created the account first, so our LinkOrCreateByEmail lost on
+// the user email index (ErrEmailRace) and never inserted our identity. The service
+// retries the link — which now finds the account by email and attaches our identity
+// — instead of failing the callback with ?auth_error=oauth.
+func TestResolveOAuthAccount_EmailRace_LinksToWinner(t *testing.T) {
+	repo := &fakeRepo{
+		identityResults: []idResult{
+			{id: 0, err: ErrIdentityNotFound}, // first identity lookup misses
+		},
+		linkResults: []linkResult{
+			{id: 0, err: ErrEmailRace}, // lost the email-create race
+			{id: 7, err: nil},          // retry links our identity to the winner's account
+		},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	id, err := svc.ResolveOAuthAccount(context.Background(), "github", "ghid-9", "shared@example.com", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != 7 {
+		t.Errorf("want id=7 (identity linked to the winner's account), got %d", id)
+	}
+	if len(repo.linkCalls) != 2 {
+		t.Errorf("want 2 LinkOrCreateByEmail calls (initial + retry), got %d", len(repo.linkCalls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Register tests
+// ---------------------------------------------------------------------------
+
+// Register invalid email → ErrInvalidEmail; CreateUser NOT called.
+func TestRegister_InvalidEmail(t *testing.T) {
+	repo := &fakeRepo{}
+	hasher := &fakeHasher{}
+	svc := New(repo, hasher)
+
+	_, err := svc.Register(context.Background(), "not-an-email", "password123", nil)
+	if !errors.Is(err, ErrInvalidEmail) {
+		t.Errorf("want ErrInvalidEmail, got %v", err)
+	}
+	if len(repo.createUserCalls) != 0 {
+		t.Errorf("CreateUser should NOT be called, got %d calls", len(repo.createUserCalls))
+	}
+}
+
+// Register short password → ErrPasswordTooShort; CreateUser NOT called.
+func TestRegister_ShortPassword(t *testing.T) {
+	repo := &fakeRepo{}
+	hasher := &fakeHasher{}
+	svc := New(repo, hasher)
+
+	_, err := svc.Register(context.Background(), "user@example.com", "short", nil)
+	if !errors.Is(err, ErrPasswordTooShort) {
+		t.Errorf("want ErrPasswordTooShort, got %v", err)
+	}
+	if len(repo.createUserCalls) != 0 {
+		t.Errorf("CreateUser should NOT be called, got %d calls", len(repo.createUserCalls))
+	}
+}
+
+// Register long password → ErrPasswordTooLong; CreateUser NOT called. bcrypt silently
+// truncates past 72 bytes, so accepting a longer password would ignore its tail.
+func TestRegister_LongPassword(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := New(repo, &fakeHasher{})
+
+	long := strings.Repeat("a", 73)
+	_, err := svc.Register(context.Background(), "user@example.com", long, nil)
+	if !errors.Is(err, ErrPasswordTooLong) {
+		t.Errorf("want ErrPasswordTooLong, got %v", err)
+	}
+	if len(repo.createUserCalls) != 0 {
+		t.Errorf("CreateUser should NOT be called, got %d calls", len(repo.createUserCalls))
+	}
+}
+
+// Register happy path → hashes then calls CreateUser with the hash, returns user.
+func TestRegister_Happy(t *testing.T) {
+	wantUser := User{ID: 1, Email: "user@example.com"}
+	repo := &fakeRepo{
+		createUserResults: []createUserResult{{user: wantUser, err: nil}},
+	}
+	hasher := &fakeHasher{}
+	svc := New(repo, hasher)
+
+	got, err := svc.Register(context.Background(), "USER@Example.COM", "password123", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != wantUser {
+		t.Errorf("want %+v, got %+v", wantUser, got)
+	}
+	if len(repo.createUserCalls) != 1 {
+		t.Fatalf("want 1 CreateUser call, got %d", len(repo.createUserCalls))
+	}
+	call := repo.createUserCalls[0]
+	if call.email != "user@example.com" {
+		t.Errorf("email not normalized: want %q, got %q", "user@example.com", call.email)
+	}
+	if call.passwordHash != "hashed:password123" {
+		t.Errorf("password not hashed: want %q, got %q", "hashed:password123", call.passwordHash)
+	}
+}
+
+// Register when CreateUser returns ErrEmailTaken → propagated.
+func TestRegister_EmailTaken(t *testing.T) {
+	repo := &fakeRepo{
+		createUserResults: []createUserResult{{user: User{}, err: ErrEmailTaken}},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	_, err := svc.Register(context.Background(), "user@example.com", "password123", nil)
+	if !errors.Is(err, ErrEmailTaken) {
+		t.Errorf("want ErrEmailTaken, got %v", err)
+	}
+}
+
+func TestRegister_ValidTimezonePassedThrough(t *testing.T) {
+	repo := &fakeRepo{
+		createUserResults: []createUserResult{{user: User{ID: 1}, err: nil}},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	tz := "Europe/Moscow"
+	if _, err := svc.Register(context.Background(), "user@example.com", "password123", &tz); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repo.createUserCalls) != 1 || repo.createUserCalls[0].timezone == nil || *repo.createUserCalls[0].timezone != tz {
+		t.Errorf("createUserCalls = %+v, want timezone %q passed through", repo.createUserCalls, tz)
+	}
+}
+
+func TestRegister_InvalidTimezoneSilentlyDropped(t *testing.T) {
+	repo := &fakeRepo{
+		createUserResults: []createUserResult{{user: User{ID: 1}, err: nil}},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	bogus := "Not/AZone"
+	if _, err := svc.Register(context.Background(), "user@example.com", "password123", &bogus); err != nil {
+		t.Fatalf("unexpected error: %v (an invalid timezone must not fail signup)", err)
+	}
+	if len(repo.createUserCalls) != 1 || repo.createUserCalls[0].timezone != nil {
+		t.Errorf("createUserCalls = %+v, want timezone dropped (nil)", repo.createUserCalls)
+	}
+}
+
+func TestUpdateTimezone_Valid(t *testing.T) {
+	repo := &fakeRepo{
+		updateTimezoneResults: []updateTimezoneResult{{user: User{ID: 1}, err: nil}},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	if _, err := svc.UpdateTimezone(context.Background(), 1, "Europe/Moscow", false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repo.updateTimezoneCalls) != 1 || *repo.updateTimezoneCalls[0].timezone != "Europe/Moscow" {
+		t.Errorf("updateTimezoneCalls = %+v, want [{1 Europe/Moscow}]", repo.updateTimezoneCalls)
+	}
+}
+
+func TestUpdateTimezone_Invalid(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := New(repo, &fakeHasher{})
+
+	_, err := svc.UpdateTimezone(context.Background(), 1, "Not/AZone", false)
+	if !errors.Is(err, ErrInvalidTimezone) {
+		t.Errorf("want ErrInvalidTimezone, got %v", err)
+	}
+	if len(repo.updateTimezoneCalls) != 0 {
+		t.Errorf("repo must not be called on invalid input, got %d calls", len(repo.updateTimezoneCalls))
+	}
+}
+
+func TestUpdateTimezone_RejectsEmptyString(t *testing.T) {
+	// time.LoadLocation("") returns UTC, nil (a Go stdlib quirk for "unset") —
+	// must not let an empty request body through as if it named a real zone.
+	repo := &fakeRepo{}
+	svc := New(repo, &fakeHasher{})
+
+	_, err := svc.UpdateTimezone(context.Background(), 1, "", false)
+	if !errors.Is(err, ErrInvalidTimezone) {
+		t.Errorf("want ErrInvalidTimezone, got %v", err)
+	}
+	if len(repo.updateTimezoneCalls) != 0 {
+		t.Errorf("repo must not be called on empty input, got %d calls", len(repo.updateTimezoneCalls))
+	}
+}
+
+func TestUpdateLanguage_Valid(t *testing.T) {
+	repo := &fakeRepo{
+		updateLanguageResults: []updateLanguageResult{{user: User{ID: 1, Language: "ru"}, err: nil}},
+	}
+	svc := New(repo, &fakeHasher{})
+
+	user, err := svc.UpdateLanguage(context.Background(), 1, "ru")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if user.Language != "ru" {
+		t.Errorf("user.Language = %q, want ru", user.Language)
+	}
+	if len(repo.updateLanguageCalls) != 1 || repo.updateLanguageCalls[0].language != "ru" {
+		t.Errorf("updateLanguageCalls = %+v, want [{1 ru}]", repo.updateLanguageCalls)
+	}
+}
+
+func TestUpdateLanguage_Invalid(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := New(repo, &fakeHasher{})
+
+	_, err := svc.UpdateLanguage(context.Background(), 1, "xx")
+	if !errors.Is(err, ErrInvalidLanguage) {
+		t.Errorf("want ErrInvalidLanguage, got %v", err)
+	}
+	if len(repo.updateLanguageCalls) != 0 {
+		t.Errorf("repo must not be called on invalid input, got %d calls", len(repo.updateLanguageCalls))
+	}
+}
+
+func TestUpdateLanguage_RejectsEmptyString(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := New(repo, &fakeHasher{})
+
+	_, err := svc.UpdateLanguage(context.Background(), 1, "")
+	if !errors.Is(err, ErrInvalidLanguage) {
+		t.Errorf("want ErrInvalidLanguage, got %v", err)
+	}
+	if len(repo.updateLanguageCalls) != 0 {
+		t.Errorf("repo must not be called on empty input, got %d calls", len(repo.updateLanguageCalls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Login tests
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// UserByID tests
+// ---------------------------------------------------------------------------

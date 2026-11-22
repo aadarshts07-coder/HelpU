@@ -1,0 +1,259 @@
+package assistant
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+
+	"github.com/tmc/langchaingo/llms"
+)
+
+// Tool is one capability offered to the model. Schema is the JSON Schema of its arguments;
+// Run executes it as the authenticated caller. Tools receive the owner's user id, not a
+// credential, so the in-process agent cannot act as anyone else.
+type Tool struct {
+	Name        string
+	Description string
+	Schema      map[string]any
+	Run         func(ctx context.Context, userID int64, args json.RawMessage) (any, error)
+
+	// Title is the human-facing name an MCP client lists the tool under. The in-app loop
+	// ignores it.
+	Title string
+
+	// Effect is what the tool does to the account it runs as. The in-app loop ignores it; the
+	// signed-in MCP server's annotations read it.
+	Effect Effect
+
+	// Idempotent says a repeated call with the same arguments changes nothing the first did
+	// not. The in-app loop ignores it; the MCP server announces it so a client may retry.
+	Idempotent bool
+}
+
+// Effect is what a tool does to the account it runs as.
+//
+// The zero value is the most dangerous kind on purpose: a tool declaring nothing is
+// announced as one that may lose data. Overclaiming costs a confirmation prompt;
+// underclaiming would skip one before a write.
+type Effect int
+
+const (
+	// EffectOverwrites may remove or replace something the account holds.
+	EffectOverwrites Effect = iota
+	// EffectAdds writes, but only adds: nothing that was there is lost.
+	EffectAdds
+	// EffectReads changes nothing.
+	EffectReads
+)
+
+// Result is one tool's answer as the model will see it. Content is always valid JSON (the
+// payload or an error envelope), because a tool failure is information the model can act
+// on. Failed lets the UI render a failed call differently.
+type Result struct {
+	Content string
+	Failed  bool
+}
+
+// Registry is the set of tools a session offers, in a fixed order, built by the preset.
+type Registry struct {
+	order []string
+	tools map[string]Tool
+
+	// MaxResultBytes caps how much of a tool's payload enters the conversation, so one large
+	// result cannot push the user's question out of context. Zero means no cap.
+	MaxResultBytes int
+}
+
+// NewRegistry registers the tools in order. A later tool with the same name replaces an
+// earlier one, so a preset can override a default.
+func NewRegistry(tools ...Tool) *Registry {
+	r := &Registry{tools: make(map[string]Tool, len(tools))}
+	for _, t := range tools {
+		if _, seen := r.tools[t.Name]; !seen {
+			r.order = append(r.order, t.Name)
+		}
+		r.tools[t.Name] = t
+	}
+	return r
+}
+
+// Names lists the registered tool names in order.
+func (r *Registry) Names() []string { return r.order }
+
+// Definitions renders the registry as the model-facing tool list.
+func (r *Registry) Definitions() []llms.Tool {
+	out := make([]llms.Tool, 0, len(r.order))
+	for _, name := range r.order {
+		t := r.tools[name]
+		out = append(out, llms.Tool{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.Schema,
+			},
+		})
+	}
+	return out
+}
+
+// Call runs one tool call and renders its outcome for the model. It never returns a Go
+// error: an unknown tool, malformed arguments and a failing tool all come back as a failed
+// Result so the model can correct itself within the turn.
+func (r *Registry) Call(ctx context.Context, userID int64, name string, args json.RawMessage) Result {
+	t, ok := r.tools[name]
+	if !ok {
+		return failed(fmt.Sprintf("unknown tool %q — call one of the tools you were given", name))
+	}
+	out, err := t.Run(ctx, userID, args)
+	if err != nil {
+		return failed(err.Error())
+	}
+	payload, err := json.Marshal(out)
+	if err != nil {
+		return failed(fmt.Sprintf("tool %q produced a result that could not be encoded: %v", name, err))
+	}
+	return Result{Content: r.capped(string(payload))}
+}
+
+// capped bounds one payload. An oversized result becomes an envelope with its opening bytes
+// and a note that it was cut, since a raw prefix is not valid JSON and the model would
+// report a parse failure or invent the rest. Error envelopes never reach here.
+func (r *Registry) capped(payload string) string {
+	if r.MaxResultBytes <= 0 || len(payload) <= r.MaxResultBytes {
+		return payload
+	}
+	envelope, err := json.Marshal(map[string]any{
+		"truncated": true,
+		"note": fmt.Sprintf("result was %d bytes, truncated to %d — narrow the call (fewer results, a tighter filter) to see the rest",
+			len(payload), r.MaxResultBytes),
+		"partial": payload[:r.MaxResultBytes],
+	})
+	if err != nil {
+		return `{"truncated":true,"note":"result too large"}`
+	}
+	return string(envelope)
+}
+
+// failed renders an error as the JSON envelope the model reads.
+func failed(msg string) Result {
+	payload, err := json.Marshal(map[string]string{"error": msg})
+	if err != nil {
+		// A map[string]string always marshals; unreachable in practice, but must not yield invalid
+		// JSON.
+		return Result{Content: `{"error":"tool failed"}`, Failed: true}
+	}
+	return Result{Content: string(payload), Failed: true}
+}
+
+// ErrInvalidArguments marks a call the MODEL got wrong, so a surface reports it as the
+// caller's mistake, not a server fault.
+var ErrInvalidArguments = errors.New("invalid arguments")
+
+// ArgError is an invalid call caused by one named argument. Field is the NAME of the
+// argument, never its value, so a surface may log it.
+type ArgError struct {
+	Field string
+	Err   error
+}
+
+func (e *ArgError) Error() string { return e.Err.Error() }
+func (e *ArgError) Unwrap() error { return e.Err }
+
+// BadArg blames err on the argument field.
+func BadArg(field string, err error) error { return &ArgError{Field: field, Err: err} }
+
+// ArgField returns the argument an error blames, or "" when it blames none.
+func ArgField(err error) string {
+	var a *ArgError
+	if errors.As(err, &a) {
+		return a.Field
+	}
+	return ""
+}
+
+// decodeField names the argument a decode failure is about. encoding/json reports an
+// unknown field only as text, so that case is read from its fixed `json: unknown field` shape.
+func decodeField(err error) string {
+	var typed *json.UnmarshalTypeError
+	if errors.As(err, &typed) {
+		return typed.Field
+	}
+	if rest, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+		if name, err := strconv.Unquote(rest); err == nil {
+			return name
+		}
+	}
+	return ""
+}
+
+// DecodeArgs strictly decodes a tool call's arguments into dst. Unknown fields, type
+// mismatches and trailing content are rejected, so a mis-addressed call fails with a reason
+// the model can act on. Empty arguments decode as an empty object.
+func DecodeArgs(args json.RawMessage, dst any) error {
+	raw := bytes.TrimSpace(args)
+	if len(raw) == 0 {
+		raw = []byte("{}")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		invalid := fmt.Errorf("%w: %w", ErrInvalidArguments, err)
+		if field := decodeField(err); field != "" {
+			return BadArg(field, invalid)
+		}
+		return invalid
+	}
+	// A second value means the model concatenated objects; decoding only the first would run
+	// the call with arguments it did not intend.
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("%w: expected a single JSON object", ErrInvalidArguments)
+	}
+	return nil
+}
+
+// EmptySchema is the schema of a tool that takes no arguments; ClosedEmptySchema also sets
+// additionalProperties false. Both are shared, read-only values.
+var (
+	EmptySchema       = map[string]any{"type": "object", "properties": map[string]any{}}
+	ClosedEmptySchema = map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}
+)
+
+// NoArgs runs a tool that takes no arguments, still refusing unexpected ones.
+func NoArgs(run func(ctx context.Context, userID int64) (any, error)) func(context.Context, int64, json.RawMessage) (any, error) {
+	return func(ctx context.Context, userID int64, raw json.RawMessage) (any, error) {
+		var in struct{}
+		if err := DecodeArgs(raw, &in); err != nil {
+			return nil, err
+		}
+		return run(ctx, userID)
+	}
+}
+
+// LoggedError is an error whose cause a surface may log: Reason is a fixed sentence authored
+// at the call site, never built from the call's arguments or data. An error without one logs
+// only its code, since other error text can interpolate what the caller sent.
+type LoggedError struct {
+	Err    error
+	Reason string
+}
+
+func (e *LoggedError) Error() string { return e.Err.Error() }
+func (e *LoggedError) Unwrap() error { return e.Err }
+
+// WithLogReason marks err as safe to explain in the logs by the constant reason.
+func WithLogReason(err error, reason string) error { return &LoggedError{Err: err, Reason: reason} }
+
+// LogReason returns the constant reason err carries, or "".
+func LogReason(err error) string {
+	var l *LoggedError
+	if errors.As(err, &l) {
+		return l.Reason
+	}
+	return ""
+}

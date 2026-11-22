@@ -1,0 +1,343 @@
+# Worklist for cmd/harvest-linkedin: which markets to ask who is hiring right now.
+#
+# Each query pages LinkedIn's public job-search listing and yields the companies behind the
+# postings, which harvest-ats then follows to their ATS board. Keep this list small and
+# deliberate — pages are the multiplier on a run's request count, and the run is a discovery
+# pass, not a crawl.
+#
+#   keywords: what to search for (required)
+#   location: the market, a LinkedIn place string (required — a query without one is refused)
+#   jobage:   only postings from the last N days (optional, default 7)
+#   pages:    result pages to walk, 10 postings each (optional, default 1)
+#
+# The starter set that preceded this one asked to be judged by measurement rather than kept on
+# faith, so it was: six queries over 15 pages surfaced 12 companies the catalogue did not have.
+# That yield is what this list widens on, and it widens along two axes the measurement named.
+#
+# The Nordics come first because of WHICH platforms the harvest can actually key. Teamtailor is
+# Swedish and its tenant density follows, and its boards are the ones a guessed candidate can
+# now reach at all — a Teamtailor board is keyed by the careers host, and until the harvest
+# shaped its guesses that way every one of them probed a host that did not exist.
+#
+# The rest widens the role vocabulary rather than the page depth: a seventh page of "golang" is
+# the same employers further down, while a market's QA and mobile postings are different
+# companies entirely. Depth stays at 3 for the markets that yielded and 2 elsewhere.
+#
+# That list was then measured in turn (2026-10-22): 22 queries surfaced 63 companies the
+# catalogue lacked and 3 live boards. Two things held the yield down. Part of the 63 were not
+# new at all — the catalogue filter keyed names with the generic slug rather than the company
+# slug, so "adesso SE" missed the catalogue's "adesso" — and the markets were the ones the
+# catalogue already covers best. The third section therefore goes where coverage is thin:
+# the Americas, Asia-Pacific, the Middle East, Africa and the smaller European markets. A thin
+# market posts less, so it gets a two-week window rather than one.
+queries:
+  # --- Nordics: Teamtailor's home market, where a host-keyed guess has the most to find ---
+  - keywords: software engineer
+    location: Sweden
+    pages: 3
+  - keywords: backend developer
+    location: Sweden
+    pages: 3
+  - keywords: software engineer
+    location: Denmark
+    pages: 3
+  - keywords: developer
+    location: Norway
+    pages: 3
+  - keywords: software developer
+    location: Finland
+    pages: 3
+
+  # --- the markets the first probe measured, kept at the depth that yielded ---
+  - keywords: golang
+    location: Germany
+    pages: 3
+  - keywords: backend engineer
+    location: Netherlands
+    pages: 3
+  - keywords: data engineer
+    location: Poland
+    pages: 3
+  - keywords: frontend developer
+    location: Spain
+    pages: 2
+  - keywords: devops
+    location: United Kingdom
+    pages: 2
+  - keywords: product manager
+    location: Remote
+    pages: 2
+
+  # --- role vocabulary the first probe never asked for, across the same and nearby markets ---
+  - keywords: qa engineer
+    location: Poland
+    pages: 2
+  - keywords: mobile developer
+    location: Germany
+    pages: 2
+  - keywords: site reliability engineer
+    location: Netherlands
+    pages: 2
+  - keywords: data scientist
+    location: United Kingdom
+    pages: 2
+  - keywords: security engineer
+    location: Germany
+    pages: 2
+  - keywords: fullstack developer
+    location: Portugal
+    pages: 2
+  - keywords: software engineer
+    location: Ireland
+    pages: 2
+  - keywords: backend developer
+    location: Switzerland
+    pages: 2
+  - keywords: software engineer
+    location: Belgium
+    pages: 2
+  - keywords: python developer
+    location: Czechia
+    pages: 2
+  - keywords: java developer
+    location: Romania
+    pages: 2
+
+  # --- thin markets: where the catalogue covers least, so a hiring employer is likeliest new ---
+  - keywords: software engineer
+    location: United States
+    pages: 3
+  - keywords: backend engineer
+    location: United States
+    pages: 3
+  - keywords: data engineer
+    location: United States
+    pages: 2
+  - keywords: devops engineer
+    location: United States
+    pages: 2
+  - keywords: software developer
+    location: Canada
+    pages: 3
+  - keywords: data engineer
+    location: Canada
+    pages: 2
+  - keywords: software engineer
+    location: Australia
+    pages: 3
+  - keywords: devops
+    location: Australia
+    pages: 2
+  - keywords: software developer
+    location: New Zealand
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: India
+    pages: 3
+  - keywords: backend developer
+    location: India
+    pages: 2
+  - keywords: software engineer
+    location: Singapore
+    pages: 3
+  - keywords: software engineer
+    location: Japan
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: South Korea
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Taiwan
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Hong Kong
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Malaysia
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Philippines
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Vietnam
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Indonesia
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Israel
+    pages: 3
+  - keywords: software engineer
+    location: United Arab Emirates
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Saudi Arabia
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Turkey
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Egypt
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: South Africa
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Nigeria
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Kenya
+    pages: 2
+    jobage: 14
+  - keywords: desenvolvedor
+    location: Brazil
+    pages: 3
+  - keywords: software engineer
+    location: Brazil
+    pages: 2
+  - keywords: desarrollador
+    location: Mexico
+    pages: 3
+  - keywords: desarrollador
+    location: Argentina
+    pages: 2
+    jobage: 14
+  - keywords: desarrollador
+    location: Colombia
+    pages: 2
+    jobage: 14
+  - keywords: desarrollador
+    location: Chile
+    pages: 2
+    jobage: 14
+  - keywords: développeur
+    location: France
+    pages: 3
+  - keywords: data engineer
+    location: France
+    pages: 2
+  - keywords: sviluppatore
+    location: Italy
+    pages: 2
+  - keywords: software engineer
+    location: Austria
+    pages: 2
+  - keywords: software engineer
+    location: Luxembourg
+    pages: 2
+    jobage: 14
+  - keywords: software developer
+    location: Estonia
+    pages: 2
+    jobage: 14
+  - keywords: software developer
+    location: Lithuania
+    pages: 2
+    jobage: 14
+  - keywords: software developer
+    location: Latvia
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Ukraine
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Greece
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Hungary
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Bulgaria
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Serbia
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Croatia
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Slovakia
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Slovenia
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Cyprus
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Malta
+    pages: 2
+    jobage: 14
+  - keywords: software engineer
+    location: Iceland
+    pages: 2
+    jobage: 14
+
+# Compact blocks: every keyword in `keywords` is searched in every place in `locations`, after the
+# explicit queries above (an explicit entry keeps its own budget). Budgets come from the
+# registration flags (--pages, --jobage).
+matrix:
+  # --- 2026-11-17 expansion, measured before it was written ---
+  # The first day of the 80-search harvest (pages 10, a 30-day window) published 1040 new
+  # LinkedIn Easy Apply postings and onboarded 152 employer ATS boards. Yield was flat across
+  # markets (roughly 40-60 published postings per search on its first crawl), so the list widens
+  # on both axes: more roles in the largest markets, and every remaining market LinkedIn's guest
+  # search resolves (Worldwide does; "European Union" returns nothing).
+  - keywords: [data analyst, machine learning engineer, frontend developer, devops engineer, qa engineer, product designer, android developer, ios developer, cybersecurity, full stack developer]
+    locations: [United States, United Kingdom, Germany, France, India, Canada, Australia, Netherlands, Spain, Italy, Brazil, Poland]
+  - keywords: [software engineer]
+    locations: [Pakistan, Bangladesh, Sri Lanka, Thailand, Qatar, Kuwait, Bahrain, Oman, Jordan, Lebanon, Morocco, Tunisia, Ghana, Rwanda, Ethiopia, Uganda, Tanzania, Mauritius, Georgia, Armenia, Kazakhstan, Uzbekistan, Azerbaijan, Moldova, Bosnia and Herzegovina, North Macedonia, Albania, Montenegro, Nepal, Cambodia, China, Norway, Switzerland, Finland, Czechia, Portugal, Romania, Singapore, Mexico, Argentina, Colombia, Chile]
+  - keywords: [desarrollador]
+    locations: [Peru, Uruguay, Costa Rica, Ecuador, Panama, Guatemala, Dominican Republic, Bolivia, Paraguay, Puerto Rico]
+  - keywords: [software engineer, frontend developer, backend developer, devops engineer, data engineer]
+    locations: [Worldwide]
+  # --- 2026-11-17 dense IT coverage ---
+  # After the widened roster lifted the harvest to ~260 published postings an hour, the owner
+  # asked for dense IT coverage. One keyword's 100 newest postings are a small slice of a large
+  # market and different roles surface different employers, so the twenty largest markets get
+  # thirty IT roles each, plus local-language titles where English keywords miss postings.
+  # Affordable because a known posting is re-read only every few days (the seen-set), so a
+  # revisit costs its listing pages, not a detail request per card.
+  - keywords: [software engineer, backend developer, frontend developer, full stack developer, mobile developer, android developer, ios developer, devops engineer, site reliability engineer, cloud engineer, data engineer, data scientist, data analyst, machine learning engineer, ai engineer, qa engineer, test automation engineer, security engineer, network engineer, systems administrator, it support, product manager, product designer, solutions architect, embedded software engineer, java developer, python developer, .net developer, golang developer, engineering manager]
+    locations: [United States, United Kingdom, India, Germany, France, Canada, Australia, Netherlands, Spain, Italy, Brazil, Poland, Mexico, Singapore, United Arab Emirates, Ireland, Sweden, Switzerland, Portugal, Israel]
+  - keywords: [softwareentwickler, entwickler]
+    locations: [Germany]
+  - keywords: [ingénieur logiciel]
+    locations: [France]
+  - keywords: [programador]
+    locations: [Spain, Mexico, Portugal]
+  - keywords: [programmatore]
+    locations: [Italy]
+  - keywords: [programador, engenheiro de software]
+    locations: [Brazil]
+  - keywords: [programista]
+    locations: [Poland]
+  - keywords: [ontwikkelaar]
+    locations: [Netherlands]
+  - keywords: [softwareentwickler]
+    locations: [Switzerland]

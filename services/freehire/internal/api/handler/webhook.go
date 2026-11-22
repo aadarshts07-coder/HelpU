@@ -1,0 +1,245 @@
+package handler
+
+import (
+	"context"
+	"errors"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/strelov1/freehire/internal/platform/db"
+	"github.com/strelov1/freehire/internal/platform/pgconv"
+)
+
+// webhookHandlers serves the account's single saved-search webhook destination.
+// Deliveries are signed with the destination's secret, which the owner reads here.
+type webhookHandlers struct {
+	queries *db.Queries
+	tester  webhookTester
+}
+
+// webhookTester sends a sample delivery signed with secret to a URL and reports whether it was
+// accepted (webhooknotify.Notifier in production).
+type webhookTester interface {
+	Test(ctx context.Context, url, secret string) error
+}
+
+func newWebhookHandlers(queries *db.Queries, tester webhookTester) *webhookHandlers {
+	return &webhookHandlers{queries: queries, tester: tester}
+}
+
+func (h *webhookHandlers) register(api fiber.Router, mw middleware) {
+	// Cookie-only, like subscription management; never an API key.
+	api.Get("/me/webhook", mw.cookie, h.GetWebhook)
+	api.Post("/me/webhook", mw.cookie, h.CreateOrUpdateWebhook)
+	api.Patch("/me/webhook", mw.cookie, h.SetWebhookEnabled)
+	api.Delete("/me/webhook", mw.cookie, h.DeleteWebhook)
+	api.Post("/me/webhook/test", mw.cookie, h.TestWebhook)
+}
+
+// webhookResponse is the public shape of a webhook destination.
+type webhookResponse struct {
+	URL string `json:"url"`
+	// Secret signs every delivery; the owner verifies X-Freehire-Signature with it. Shown on
+	// every read: management is cookie-only, so only the owner sees it.
+	Secret        string     `json:"secret"`
+	Enabled       bool       `json:"enabled"`
+	CreatedAt     *time.Time `json:"created_at"`
+	LastSuccessAt *time.Time `json:"last_success_at"`
+	DisabledAt    *time.Time `json:"disabled_at"`
+}
+
+func toWebhookResponse(w db.WebhookConfig) webhookResponse {
+	return webhookResponse{
+		URL:           w.URL,
+		Secret:        w.Secret,
+		Enabled:       w.Enabled,
+		CreatedAt:     pgconv.TimePtr(w.CreatedAt),
+		LastSuccessAt: pgconv.TimePtr(w.LastSuccessAt),
+		DisabledAt:    pgconv.TimePtr(w.DisabledAt),
+	}
+}
+
+type createWebhookRequest struct {
+	URL string `json:"url"`
+}
+
+type setWebhookEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// validateWebhookURL rejects anything but an http(s) URL.
+func validateWebhookURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid webhook url")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fiber.NewError(fiber.StatusBadRequest, "webhook url must be http or https")
+	}
+	return nil
+}
+
+// CreateOrUpdateWebhook creates the account's webhook destination, or updates
+// its URL if one already exists — there is exactly one per account.
+func (h *webhookHandlers) CreateOrUpdateWebhook(c *fiber.Ctx) error {
+	userID, err := requireUserID(c)
+	if err != nil {
+		return err
+	}
+	var in createWebhookRequest
+	if err := c.BodyParser(&in); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if err := validateWebhookURL(in.URL); err != nil {
+		return err
+	}
+	// The probe is signed with the secret the destination will have: the existing one (an
+	// update keeps it), else a new one, which the upsert stores only on insert.
+	secret, err := h.secretFor(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	// Prove the destination accepts our payload before storing it: a URL that only fails at
+	// the first real digest gets disabled later with nobody watching (e.g. Discord URLs, which want a different body).
+	if err := h.probe(c.Context(), in.URL, secret); err != nil {
+		return err
+	}
+
+	_, err = h.queries.UpsertWebhookConfig(c.Context(), db.UpsertWebhookConfigParams{
+		UserID: userID,
+		URL:    in.URL,
+		Secret: secret,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The stored secret changed under the probe (a concurrent save or delete).
+		return fiber.NewError(fiber.StatusConflict, "webhook destination changed while saving; try again")
+	}
+	if err != nil {
+		return err
+	}
+	row, err := h.recordProbeSuccess(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"data": toWebhookResponse(row)})
+}
+
+// TestWebhook sends a sample delivery to the stored destination, so a user can recheck an
+// endpoint without re-saving. A pass stamps last_success_at; a failure changes nothing and is
+// a 422 naming the destination's answer. A missing destination is a 404.
+func (h *webhookHandlers) TestWebhook(c *fiber.Ctx) error {
+	userID, err := requireUserID(c)
+	if err != nil {
+		return err
+	}
+	row, err := h.queries.GetWebhookConfig(c.Context(), userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fiber.NewError(fiber.StatusNotFound, "no webhook destination configured")
+	}
+	if err != nil {
+		return err
+	}
+	if err := h.probe(c.Context(), row.URL, row.Secret); err != nil {
+		return err
+	}
+	if row, err = h.recordProbeSuccess(c.Context(), userID); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"data": toWebhookResponse(row)})
+}
+
+// secretFor is the account's existing destination secret, or a new one when it has none.
+func (h *webhookHandlers) secretFor(ctx context.Context, userID int64) (string, error) {
+	row, err := h.queries.GetWebhookConfig(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return newWebhookSecret()
+	}
+	return row.Secret, err
+}
+
+// probe runs the tester against url and turns a refusal into an actionable 422, without the transport's package prefix.
+func (h *webhookHandlers) probe(ctx context.Context, url, secret string) error {
+	if err := h.tester.Test(ctx, url, secret); err != nil {
+		reason := strings.TrimPrefix(err.Error(), "webhooknotify: ")
+		return fiber.NewError(fiber.StatusUnprocessableEntity, "webhook test failed: "+reason)
+	}
+	return nil
+}
+
+// recordProbeSuccess stamps a passed probe like a delivered digest and returns the destination.
+func (h *webhookHandlers) recordProbeSuccess(ctx context.Context, userID int64) (db.WebhookConfig, error) {
+	if err := h.queries.RecordWebhookDeliverySuccess(ctx, userID); err != nil {
+		return db.WebhookConfig{}, err
+	}
+	return h.queries.GetWebhookConfig(ctx, userID)
+}
+
+// GetWebhook returns the authenticated user's webhook destination metadata, or
+// null if none is configured.
+func (h *webhookHandlers) GetWebhook(c *fiber.Ctx) error {
+	userID, err := requireUserID(c)
+	if err != nil {
+		return err
+	}
+	row, err := h.queries.GetWebhookConfig(c.Context(), userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return c.JSON(fiber.Map{"data": nil})
+	}
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"data": toWebhookResponse(row)})
+}
+
+// SetWebhookEnabled toggles the destination on/off without changing its URL.
+// A missing destination is a 404.
+func (h *webhookHandlers) SetWebhookEnabled(c *fiber.Ctx) error {
+	userID, err := requireUserID(c)
+	if err != nil {
+		return err
+	}
+	var in setWebhookEnabledRequest
+	if err := c.BodyParser(&in); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+
+	if in.Enabled {
+		if _, err := h.queries.EnableWebhookConfig(c.Context(), userID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	} else if _, err := h.queries.DisableWebhookConfig(c.Context(), userID); err != nil {
+		return err
+	}
+
+	// This read is what reports "no destination configured"; EnableWebhookConfig's ErrNoRows is swallowed above.
+	row, err := h.queries.GetWebhookConfig(c.Context(), userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fiber.NewError(fiber.StatusNotFound, "no webhook destination configured")
+	}
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"data": toWebhookResponse(row)})
+}
+
+// DeleteWebhook removes the account's webhook destination entirely. A missing
+// destination is a 404.
+func (h *webhookHandlers) DeleteWebhook(c *fiber.Ctx) error {
+	userID, err := requireUserID(c)
+	if err != nil {
+		return err
+	}
+	affected, err := h.queries.DeleteWebhookConfig(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "no webhook destination configured")
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}

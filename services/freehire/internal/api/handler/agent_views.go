@@ -1,0 +1,43 @@
+package handler
+
+import (
+	"github.com/gofiber/fiber/v2"
+
+	"github.com/strelov1/freehire/internal/application/agentview"
+	"github.com/strelov1/freehire/internal/identity/auth"
+	"github.com/strelov1/freehire/internal/search/search"
+)
+
+// agentViews marks a request as an agent's, so the postings its handler serves are recorded
+// (internal/application/agentview). The scope rides in fasthttp's user values, which
+// RequestCtx.Value exposes as a context, so Fiber handlers and MCP tools reach it alike. A nil
+// sink records nothing.
+//
+// The viewer is the MCP account, a signed-in caller, or the verified external caller; else the
+// client IP with the User-Agent.
+func agentViews(sink agentview.Sink, surface string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if sink == nil {
+			return c.Next()
+		}
+		userID, _ := c.Locals(localsMCPUserID).(int64)
+		if userID == 0 {
+			userID, _ = auth.UserID(c)
+		}
+		if userID == 0 {
+			userID, _ = c.Locals(localsExternalCallerID).(int64)
+		}
+		agentview.Attach(c.Context().SetUserValue, sink, surface,
+			agentview.ViewerKey(userID, c.IP(), c.Get(fiber.HeaderUserAgent)))
+		return c.Next()
+	}
+}
+
+// hitIDs is the job ids of a search answer, in order.
+func hitIDs(hits []search.JobDocument) []int64 {
+	ids := make([]int64, len(hits))
+	for i := range hits {
+		ids[i] = hits[i].ID
+	}
+	return ids
+}

@@ -1,0 +1,126 @@
+// Command broadcast sends one campaign to the whole audience: one letter, once,
+// on a date someone picked.
+//
+//	./broadcast -campaign discord-invite -dry-run   # how many would receive it
+//	./broadcast -campaign discord-invite            # send one capped batch
+//	./broadcast -campaign discord-invite -to me@example.com   # send only to me
+//	./broadcast -campaign discord-invite -half a              # only side a of a split test
+//
+// It is scheduled once, for the day of the announcement, and refuses to guess: without
+// -campaign it lists what exists and exits non-zero. -dry-run exists because a campaign is
+// irreversible and reaches everyone.
+package main
+
+import (
+	"context"
+	"flag"
+	"log"
+	"strings"
+
+	"github.com/strelov1/freehire/internal/engage/broadcast"
+	"github.com/strelov1/freehire/internal/engage/emailnotify"
+	"github.com/strelov1/freehire/internal/engage/emailprefs"
+	"github.com/strelov1/freehire/internal/platform/db"
+	"github.com/strelov1/freehire/internal/platform/worker"
+)
+
+var (
+	campaignName = flag.String("campaign", "", "which campaign to send (required)")
+	dryRun       = flag.Bool("dry-run", false, "report the audience size and send nothing")
+	only         = flag.String("to", "", "send only to this address, and do not touch the ledger")
+	onlyUser     = flag.Int64("to-user", 0, "the account id -to belongs to; required with -to, because the mail carries that account's unsubscribe link")
+	half         = flag.String("half", "", "send only this side of a split test: a or b")
+	maxPerRun    = flag.Int("max", broadcast.DefaultMaxPerRun, "cap on one run")
+)
+
+func main() {
+	flag.Parse()
+	worker.Main(run)
+}
+
+func run() int {
+	ctx, cfg, pool, cleanup, err := worker.Bootstrap(context.Background())
+	if err != nil {
+		log.Printf("database: %v", err)
+		return 1
+	}
+	defer cleanup()
+
+	if *campaignName == "" {
+		log.Printf("broadcast: -campaign is required; known campaigns: %s",
+			strings.Join(broadcast.Names(), ", "))
+		return 1
+	}
+	if !broadcast.ValidHalf(*half) {
+		log.Printf("broadcast: -half must be a or b, got %q", *half)
+		return 2
+	}
+	campaign, ok := broadcast.Lookup(*campaignName)
+	campaign.Half = *half
+	if !ok {
+		log.Printf("broadcast: unknown campaign %q; known: %s",
+			*campaignName, strings.Join(broadcast.Names(), ", "))
+		return 1
+	}
+
+	if cfg.AWSRegion == "" || cfg.NotifyEmailFrom == "" || cfg.OnboardingReplyTo == "" {
+		log.Print("broadcast: AWS_REGION / NOTIFY_EMAIL_FROM / ONBOARDING_REPLY_TO must all be set")
+		return 1
+	}
+
+	ses, err := emailnotify.NewClient(ctx, cfg.AWSRegion)
+	if err != nil {
+		log.Printf("broadcast: ses: %v", err)
+		return 1
+	}
+	links := emailprefs.NewLinks(cfg.JWTSecret, cfg.FrontendOrigin)
+	mailer := broadcast.NewMailer(ses, cfg.NotifyEmailFrom, cfg.OnboardingReplyTo, cfg.FrontendOrigin, links)
+	trackedSES := ses.WithEngagementTracking(cfg.SESEngagementConfigurationSet)
+	tracked := broadcast.NewMailer(trackedSES, cfg.NotifyEmailFrom, cfg.OnboardingReplyTo, cfg.FrontendOrigin, links)
+	runner := broadcast.New(db.New(pool), tracked, int32(*maxPerRun))
+
+	// A single address, for looking at the letter in a real client. The ledger is left alone
+	// (inspecting must not consume anybody's one delivery) and it goes out untracked, so it
+	// cannot count toward the campaign's rates.
+	if *only != "" {
+		// The mail carries a real unsubscribe link, so -to must say whose account it is.
+		if *onlyUser <= 0 {
+			log.Print("broadcast: -to also needs -to-user, the account id the address belongs to")
+			return 2
+		}
+		if err := mailer.Send(ctx, campaign, *onlyUser, *only); err != nil {
+			log.Printf("broadcast: %v", err)
+			return 1
+		}
+		log.Printf("broadcast: sent %s to %s (ledger untouched)", campaign.Name, *only)
+		return 0
+	}
+
+	if *dryRun {
+		pending, err := runner.Pending(ctx, campaign)
+		if err != nil {
+			log.Printf("broadcast: %v", err)
+			return 1
+		}
+		log.Printf("broadcast: %s would go to %d people (cap %d per run)", campaign.Name, pending, *maxPerRun)
+		return 0
+	}
+
+	// Before anything goes out: a run records its failures, and a recorded recipient is never
+	// mailed again, so an unknown set would spend the whole audience on rejected sends.
+	if err := trackedSES.CheckEngagementTracking(ctx); err != nil {
+		log.Printf("broadcast: %v", err)
+		return 1
+	}
+	stats, err := runner.Run(ctx, campaign)
+	if err != nil {
+		log.Printf("broadcast: %v", err)
+		return 1
+	}
+	log.Printf("broadcast: %s sent=%d failed=%d remaining=%d",
+		campaign.Name, stats.Sent, stats.Failed, stats.Remaining)
+	if stats.Failed > 0 {
+		return 1
+	}
+	return 0
+}

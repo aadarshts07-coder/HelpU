@@ -1,0 +1,298 @@
+package sources
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"math"
+	"math/rand/v2"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// eightfoldPageLimit is the position-list page size. The Eightfold server caps a page at 10
+// regardless of the requested num, so this is fixed and start is the only pagination lever.
+const eightfoldPageLimit = 10
+
+// eightfoldDetailWorkers bounds the per-board detail fan-out. Eightfold rate-limits an IP to
+// ~290 requests per window (returning 403), so the detail crawl uses a low concurrency — far
+// below the shared defaultDetailWorkers — to keep the burst gentle and lean on backoff retry
+// (getJSONRetrying) for the rest, rather than slamming the cap and dropping postings.
+const eightfoldDetailWorkers = 2
+
+// eightfoldMaxNewPerBoard bounds how many unseen positions one board hydrates per run. Every
+// board of a shard shares one ~1 req/s pace (pacedEightfoldGetter) inside a ~2,400 s crawl
+// deadline, so a cold or long-unreached board with thousands of positions hydrated in full would
+// spend the whole shard's budget and, since a buffered board saves nothing until it returns,
+// save nothing either. At 250 such a board converges over a few runs while steady-state churn
+// never reaches the bound.
+const eightfoldMaxNewPerBoard = 250
+
+// eightfoldMaxRetries bounds how many times a rate-limited (403/429) request is retried before
+// giving up. eightfoldRetryBase is the first backoff delay (doubled each attempt, capped).
+const (
+	eightfoldMaxRetries = 6
+	eightfoldRetryBase  = time.Second
+)
+
+// eightfold adapts Eightfold AI career sites (e.g. apply.careers.microsoft.com). Both
+// endpoints are public GET JSON. Two list-API generations exist and a tenant supports exactly
+// one (the other returns 403): the newer /api/pcsx/search and the legacy /api/apply/v2/jobs.
+// The list carries no description, so each position's detail /api/apply/v2/jobs/<id> (shared by
+// both generations) is fetched to assemble the description and canonical URL.
+type eightfold struct {
+	http JSONGetter
+	// retryBase is the first backoff delay for a rate-limited request — a field, not a
+	// package var, so tests disable sleeping without touching shared state.
+	retryBase time.Duration
+}
+
+// NewEightfold builds the Eightfold adapter over the given HTTP client.
+func NewEightfold(c JSONGetter) Source { return eightfold{http: c, retryBase: eightfoldRetryBase} }
+
+func (eightfold) Provider() string { return "eightfold" }
+
+// fullBoardListing: pageList proves completeness on both list-API generations — the server's
+// own count is authoritative, no artificial cap exists, and any page error discards what was
+// collected and fails the whole listing. Detail fetches are best-effort per posting (list-only
+// fallback, logged). See the fullBoardListing interface for the bar.
+func (eightfold) FullBoardListing() {}
+
+// eightfoldBoard is a configured board split into the host and tenant domain the endpoints need.
+type eightfoldBoard struct {
+	host, domain string
+}
+
+// parseEightfoldBoard splits "host/domain" (e.g.
+// "apply.careers.microsoft.com/microsoft.com"). The host paths the requests; the domain is
+// the Eightfold tenant key the endpoints require as a query parameter.
+func parseEightfoldBoard(board string) (eightfoldBoard, error) {
+	host, domain, ok := strings.Cut(board, "/")
+	if !ok || host == "" || domain == "" {
+		return eightfoldBoard{}, fmt.Errorf("eightfold: board %q must be \"host/domain\"", board)
+	}
+	return eightfoldBoard{host: host, domain: domain}, nil
+}
+
+// eightfoldPosition is one list item, decoding both generations' field names: the newer pcsx
+// list uses postedTs/workLocationOption and only locations[]; the legacy v2 list uses
+// t_create/work_location_option and a single-string location (plus a canonical URL). Unused
+// fields stay zero, so one struct decodes either shape.
+type eightfoldPosition struct {
+	ID                   int64    `json:"id"`
+	Name                 string   `json:"name"`
+	Location             string   `json:"location"`  // legacy v2 single-string
+	Locations            []string `json:"locations"` // both generations
+	PostedTs             int64    `json:"postedTs"`  // pcsx
+	TCreate              int64    `json:"t_create"`  // legacy v2
+	WorkLocationOption   string   `json:"workLocationOption"`
+	WorkLocationOptionV2 string   `json:"work_location_option"`
+	CanonicalPositionURL string   `json:"canonicalPositionUrl"` // present in the legacy v2 list
+}
+
+// pcsxListResponse is one /api/pcsx/search page (positions nest under data).
+type pcsxListResponse struct {
+	Data struct {
+		Positions []eightfoldPosition `json:"positions"`
+		Count     int                 `json:"count"`
+	} `json:"data"`
+}
+
+// v2ListResponse is one legacy /api/apply/v2/jobs page (positions and count are top-level).
+type v2ListResponse struct {
+	Positions []eightfoldPosition `json:"positions"`
+	Count     int                 `json:"count"`
+}
+
+// eightfoldDetail is the part of /api/apply/v2/jobs/<id> the Job shape needs.
+type eightfoldDetail struct {
+	JobDescription       string `json:"job_description"`
+	CanonicalPositionURL string `json:"canonicalPositionUrl"`
+}
+
+// Fetch hydrates every listed position. Kept for callers that do not drive hydration (link
+// resolution, tests); ingest goes through FetchNew.
+func (s eightfold) Fetch(ctx context.Context, e CompanyEntry) ([]Job, error) {
+	return s.crawl(ctx, e, func(string) bool { return false }, math.MaxInt)
+}
+
+// FetchNew lists the whole board but spends a detail request only on a position the catalogue
+// does not hold, and on at most eightfoldMaxNewPerBoard of those per run. A seen position comes
+// back as a SeenRefresh carrying the listing's identity, so its liveness refreshes and its
+// stored body is kept; an unseen position past the bound is left for a later run (see crawl).
+//
+// The detail is this adapter's whole cost: the list serves ten positions per request and the
+// detail one, all under a ~1 req/s pace shared by every board in a shard. Re-reading every
+// stored body each run would hit the crawl deadline, and a board that never finishes never
+// qualifies for the board-scoped sweep.
+func (s eightfold) FetchNew(ctx context.Context, e CompanyEntry, seen func(externalID string) bool) ([]Job, error) {
+	return s.crawl(ctx, e, seen, eightfoldMaxNewPerBoard)
+}
+
+// crawl is the walk behind Fetch and FetchNew: list the board, refresh the seen positions from
+// the listing alone, and hydrate up to maxNew of the rest. The unseen positions past maxNew
+// are not yielded, so the pipeline reads the board as having pending work rather than as quiet.
+//
+// The budget goes to a random sample rather than the listing's first positions: a position that
+// is never stored stays unseen, and a fixed prefix of those would take the budget on every run and starve the positions behind it.
+//
+// Not yielding is safe because an unseen position is almost always a new one. The exceptions are
+// the stored rows the seen set withholds (INGEST_REFETCH_ALL, the hydration-retry window,
+// BODY_REFRESH_DAYS): one left out of the sample gets no liveness refresh this run. Yielding it
+// list-only instead would be worse — UpsertJob keeps a stored body but re-derives every facet
+// from the empty one — and a SeenRefresh cannot be sent for a position that may not be stored. A
+// withheld row the sample misses is refreshed by the next run that samples it or no longer
+// withholds it, and one the 48h unseen sweep closes in between reopens when it is hydrated. A
+// repair run under INGEST_REFETCH_ALL reaches at most maxNew positions per board, so repeat it.
+func (s eightfold) crawl(ctx context.Context, e CompanyEntry, seen func(string) bool, maxNew int) ([]Job, error) {
+	b, err := parseEightfoldBoard(e.Board)
+	if err != nil {
+		return nil, err
+	}
+	positions, err := s.listPositions(ctx, b)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		jobs   []Job
+		unseen []eightfoldPosition
+	)
+	for _, p := range positions {
+		id := strconv.FormatInt(p.ID, 10)
+		if !seen(id) {
+			unseen = append(unseen, p)
+			continue
+		}
+		jobs = append(jobs, Job{
+			ExternalID:  id,
+			URL:         firstNonEmpty(p.CanonicalPositionURL, eightfoldPositionURL(b, id)),
+			Title:       strings.TrimSpace(p.Name),
+			Company:     e.Company,
+			SeenRefresh: true,
+		})
+	}
+	if len(unseen) > maxNew {
+		rand.Shuffle(len(unseen), func(i, j int) { unseen[i], unseen[j] = unseen[j], unseen[i] })
+		unseen = unseen[:maxNew]
+	}
+	hydrated := fetchDetails(unseen, eightfoldDetailWorkers,
+		func(p eightfoldPosition) (Job, bool) { return s.detail(ctx, e, b, p) })
+	return append(jobs, hydrated...), nil
+}
+
+// getJSONRetrying GETs url, retrying rate-limit responses (403/429) with exponential backoff
+// so the crawl rides out Eightfold's per-IP request cap (~290/window) instead of dropping the
+// postings beyond it. The shared client already retries 429/5xx/network; this adds 403, which
+// Eightfold returns for rate-limiting (not auth) here, and longer waits to clear a full window.
+// A non-rate-limit error (e.g. 404) returns immediately so retry stays scoped.
+func (s eightfold) getJSONRetrying(ctx context.Context, url string, v any) error {
+	return retryWhile(ctx, eightfoldMaxRetries, s.retryBase, isRateLimited, func() error {
+		return s.http.GetJSON(ctx, url, v)
+	})
+}
+
+// listPositions returns the board's positions, auto-detecting the list-API generation: it
+// tries the newer pcsx list and, if that fails (a legacy tenant returns 403), falls back to
+// the v2 list. A tenant supports exactly one, so whichever paginates successfully is
+// authoritative; the fallback restarts from the first page.
+func (s eightfold) listPositions(ctx context.Context, b eightfoldBoard) ([]eightfoldPosition, error) {
+	positions, err := s.pageList(ctx, b, s.pcsxPage)
+	if err != nil {
+		positions, err = s.pageList(ctx, b, s.v2Page)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("eightfold: list domain %s: %w", b.domain, err)
+	}
+	return positions, nil
+}
+
+// pageList walks one list generation, fetching pages via fetchPage and advancing start by the
+// page size the server returns, stopping when a page is empty or the collected count reaches
+// the catalogue total. The empty-page check is the backstop if count is ever wrong.
+func (s eightfold) pageList(
+	ctx context.Context, b eightfoldBoard,
+	fetchPage func(ctx context.Context, b eightfoldBoard, start int) ([]eightfoldPosition, int, error),
+) ([]eightfoldPosition, error) {
+	var positions []eightfoldPosition
+	for start := 0; ; {
+		page, count, err := fetchPage(ctx, b, start)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		positions = append(positions, page...)
+		start += len(page)
+		if start >= count {
+			break
+		}
+	}
+	return positions, nil
+}
+
+// pcsxPage fetches one newer /api/pcsx/search page.
+func (s eightfold) pcsxPage(ctx context.Context, b eightfoldBoard, start int) ([]eightfoldPosition, int, error) {
+	url := fmt.Sprintf(
+		"https://%s/api/pcsx/search?domain=%s&query=&start=%d&num=%d&sort_by=relevance",
+		b.host, b.domain, start, eightfoldPageLimit)
+	var resp pcsxListResponse
+	if err := s.getJSONRetrying(ctx, url, &resp); err != nil {
+		return nil, 0, err
+	}
+	return resp.Data.Positions, resp.Data.Count, nil
+}
+
+// v2Page fetches one legacy /api/apply/v2/jobs page.
+func (s eightfold) v2Page(ctx context.Context, b eightfoldBoard, start int) ([]eightfoldPosition, int, error) {
+	url := fmt.Sprintf(
+		"https://%s/api/apply/v2/jobs?domain=%s&query=&start=%d&num=%d&sort_by=relevance",
+		b.host, b.domain, start, eightfoldPageLimit)
+	var resp v2ListResponse
+	if err := s.getJSONRetrying(ctx, url, &resp); err != nil {
+		return nil, 0, err
+	}
+	return resp.Positions, resp.Count, nil
+}
+
+// eightfoldPositionURL is the public position page, the URL a posting falls back to when
+// neither the list nor the detail names a canonical one.
+func eightfoldPositionURL(b eightfoldBoard, id string) string {
+	return fmt.Sprintf("https://%s/careers/job/%s", b.host, id)
+}
+
+// detail fetches one position's detail and maps it to a Job. Metadata comes from the list
+// position; the description and canonical URL come from the detail (with the list position's
+// canonical URL and a host fallback for the URL). A failed detail request is isolated like
+// the justjoin/nofluffjobs siblings: logged and ingested list-only (no description) rather
+// than dropping the posting — the pipeline withholds a body-less row from the seen set for a
+// while, so a later crawl retries the detail.
+func (s eightfold) detail(ctx context.Context, e CompanyEntry, b eightfoldBoard, p eightfoldPosition) (Job, bool) {
+	id := strconv.FormatInt(p.ID, 10)
+	url := fmt.Sprintf("https://%s/api/apply/v2/jobs/%s?domain=%s", b.host, id, b.domain)
+	var d eightfoldDetail
+	if err := s.getJSONRetrying(ctx, url, &d); err != nil {
+		log.Printf("eightfold: detail %s failed; ingesting list-only: %v", id, err)
+	}
+
+	location := firstNonEmpty(p.Location, firstNonEmpty(p.Locations...))
+	workMode := workplaceTypeMode(firstNonEmpty(p.WorkLocationOption, p.WorkLocationOptionV2))
+	postedTs := p.PostedTs
+	if postedTs == 0 {
+		postedTs = p.TCreate
+	}
+	pageURL := firstNonEmpty(
+		d.CanonicalPositionURL, p.CanonicalPositionURL, eightfoldPositionURL(b, id))
+	return Job{
+		ExternalID:  id,
+		URL:         pageURL,
+		Title:       strings.TrimSpace(p.Name),
+		Company:     e.Company,
+		Location:    location,
+		Description: sanitizeHTML(d.JobDescription),
+		Remote:      workMode == "remote" || isRemote(location),
+		WorkMode:    workMode,
+		PostedAt:    parseEpochSeconds(postedTs),
+	}, true
+}

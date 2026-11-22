@@ -1,0 +1,16 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appIDs": ["25U9HN34VM.me.freehire.mobile"],
+        "components": [
+          { "/": "/auth/mobile-callback*" }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["25U9HN34VM.me.freehire.mobile"]
+  }
+}

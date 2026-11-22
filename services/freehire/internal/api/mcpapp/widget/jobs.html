@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>freehire</title>
+<style>
+  /* The host's own variables win (MCP Apps hostContext.styles); ours are the fallback,
+     copied from design-system/dist/tokens-{light,dark}.css. */
+  :root {
+    color-scheme: light dark;
+    --fh-bg: var(--color-background-primary, light-dark(oklch(0.997 0.003 130), oklch(0.16 0.006 110)));
+    --fh-fg: var(--color-text-primary, light-dark(oklch(0.13 0 0), oklch(0.985 0 0)));
+    --fh-muted-fg: var(--color-text-secondary, light-dark(oklch(0.43 0 0), oklch(0.72 0 0)));
+    --fh-muted: var(--color-background-secondary, light-dark(oklch(0.955 0 0), oklch(0.24 0 0)));
+    --fh-border: var(--color-border-primary, light-dark(oklch(0.92 0 0), oklch(1 0 0 / 8%)));
+    --fh-good: light-dark(oklch(0.52 0.14 150), oklch(0.78 0.15 150));
+    --fh-warn: light-dark(oklch(0.55 0.15 70), oklch(0.83 0.19 84));
+    --fh-bad: light-dark(oklch(0.577 0.245 27.3), oklch(0.704 0.191 22.2));
+    --fh-radius: var(--border-radius-md, 10px);
+    --fh-font: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; background: transparent; color: var(--fh-fg); font: 14px/1.45 var(--fh-font); }
+  .notice { margin: 0 0 8px; padding: 8px 10px; border-radius: var(--fh-radius); background: var(--fh-muted); color: var(--fh-muted-fg); font-size: 12px; }
+  .empty { padding: 16px; color: var(--fh-muted-fg); }
+  .list { display: flex; flex-direction: column; }
+  .card { display: flex; gap: 12px; padding: 12px; border-bottom: 1px solid var(--fh-border); }
+  .list .card:last-child { border-bottom: 0; }
+  .logo { flex: none; width: 40px; height: 40px; border-radius: 8px; object-fit: contain; background: #fff; border: 1px solid var(--fh-border); }
+  .mono { display: flex; align-items: center; justify-content: center; background: var(--fh-muted); color: var(--fh-muted-fg); font-weight: 600; font-size: 16px; }
+  .body { min-width: 0; flex: 1; }
+  .title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.3; }
+  .meta { margin: 2px 0 0; color: var(--fh-muted-fg); font-size: 13px; }
+  .facts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 0; font-size: 13px; }
+  .salary { font-weight: 600; }
+  .skills { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
+  .skills li { padding: 1px 8px; border-radius: 999px; background: var(--fh-muted); font-size: 12px; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; }
+  .btn { display: inline-block; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--fh-border); color: var(--fh-fg); text-decoration: none; font-size: 13px; font-weight: 500; cursor: pointer; background: transparent; font-family: inherit; }
+  .btn.primary { background: var(--fh-fg); color: var(--fh-bg); border-color: var(--fh-fg); }
+  .btn:focus-visible { outline: 2px solid var(--fh-fg); outline-offset: 3px; }
+  .btn[hidden] { display: none; }
+  .btn:disabled { cursor: default; opacity: 0.6; }
+  /* The account controls sit in the card's own action row; status lines wrap below it. */
+  .account-actions, .account-controls { display: contents; }
+  .action-status { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--fh-muted-fg); overflow-wrap: anywhere; }
+  .action-status:empty { display: none; }
+  .action-recovery { flex-basis: 100%; font-size: 12px; }
+  .action-recovery[hidden] { display: none; }
+  .action-recovery label { display: block; margin-bottom: 8px; }
+  .account-actions[data-state="confirmed"] .action-status { color: var(--fh-good); }
+  .account-actions[data-state="failed"] .action-status, .account-actions[data-state="unknown"] .action-status { color: var(--fh-bad); }
+  .match { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--fh-border); }
+  .match-track { flex: 1; height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in oklch, var(--fh-bad) 15%, transparent); }
+  .match-fill { height: 100%; border-radius: inherit; background: light-dark(#5b6f00, oklch(0.72 0.095 121)); }
+  .match-text { flex: none; color: var(--fh-muted-fg); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+  .source { margin-left: auto; color: var(--fh-muted-fg); font-size: 12px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+  .badge { padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; font-size: 12px; }
+  .badge.good { color: var(--fh-good); }
+  .badge.warn { color: var(--fh-warn); }
+  .badge.bad { color: var(--fh-bad); }
+  .badge.plain { color: var(--fh-muted-fg); }
+  .detail { padding: 0 12px 12px; }
+  .detail h3 { margin: 14px 0 6px; font-size: 13px; font-weight: 600; }
+  .detail ul { margin: 0; padding-left: 18px; }
+  .detail .apply { margin: 14px 0 0; color: var(--fh-muted-fg); font-size: 13px; }
+  .description { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+  .description.collapsed { max-height: 9.5em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
+  .more { margin: 6px 0 0; }
+</style>
+</head>
+<body>
+<main id="root"></main>
+<script>
+/* widget/jobs.js */
+</script>
+</body>
+</html>

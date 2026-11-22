@@ -1,0 +1,109 @@
+// Package jobreality derives a deterministic "reality" class for a job (real opening
+// versus perpetual ghost/evergreen listing) from ingest history and text facts. It
+// never guesses. It is time-dependent, so it is computed at index/read time, never
+// stored.
+package jobreality
+
+import "time"
+
+// Reality classes.
+const (
+	ClassFresh           = "fresh"
+	ClassStale           = "stale"
+	ClassLikelyEvergreen = "likely-evergreen"
+)
+
+// Thresholds. One signal is weak; the verdict requires convergence.
+const (
+	freshWindowDays = 14 // age at or under which a job with no evergreen signal is fresh
+	oldAgeDays      = 90 // age at or over which the "old" signal fires
+	repostThreshold = 3  // distinct postings of one role (any status) that count as reposting
+	massThreshold   = 5  // concurrent open postings of one role that count as mass-posting
+	convergence     = 2  // number of independent signals required for likely-evergreen
+)
+
+// Input is the history + text facts a classification reads. RepostCount is the number
+// of distinct external_ids of any status sharing the role fingerprint (repost
+// history); MassPostingCount is the same restricted to open jobs (concurrent
+// mass-posting). Both are at least 1 (the job itself). HasEvergreenText is the dictionary
+// result (see HasEvergreenMarker). PostedAt is honored only when HasPostedAt is set.
+type Input struct {
+	Now              time.Time
+	CreatedAt        time.Time
+	PostedAt         time.Time
+	HasPostedAt      bool
+	RepostCount      int
+	MassPostingCount int
+	HasEvergreenText bool
+}
+
+// Evidence is the observable facts behind a classification — surfaced so the UI states
+// facts, not a bare accusation.
+type Evidence struct {
+	AgeDays          int
+	RepostCount      int
+	MassPostingCount int
+	IsFakeFreshness  bool
+}
+
+// Result is a classification and the evidence that produced it.
+type Result struct {
+	Class    string
+	Evidence Evidence
+}
+
+// Classify assigns a reality class from the input. likely-evergreen requires at least
+// `convergence` independent signals to fire — never age alone; otherwise a new job
+// with no evergreen signal is fresh and everything else is stale.
+func Classify(in Input) Result {
+	ageDays := int(in.Now.Sub(in.CreatedAt).Hours() / 24)
+
+	old := ageDays >= oldAgeDays
+	// Reposting and mass-posting must be independent signals. MassPostingCount (open)
+	// is a subset of RepostCount (any status), so the repost signal counts only the
+	// historical churn beyond the concurrent open postings.
+	massPosted := in.MassPostingCount >= massThreshold
+	reposted := in.RepostCount-in.MassPostingCount >= repostThreshold
+
+	signals := 0
+	for _, on := range []bool{old, reposted, massPosted, in.HasEvergreenText} {
+		if on {
+			signals++
+		}
+	}
+
+	fakeFreshness := old && in.HasPostedAt && int(in.Now.Sub(in.PostedAt).Hours()/24) <= freshWindowDays
+
+	class := ClassStale
+	switch {
+	case signals >= convergence:
+		class = ClassLikelyEvergreen
+	case ageDays <= freshWindowDays && !in.HasEvergreenText:
+		class = ClassFresh
+	}
+
+	return Result{
+		Class: class,
+		Evidence: Evidence{
+			AgeDays:          ageDays,
+			RepostCount:      in.RepostCount,
+			MassPostingCount: in.MassPostingCount,
+			IsFakeFreshness:  fakeFreshness,
+		},
+	}
+}
+
+// AgeCrossingDays are the ages, in whole days since CreatedAt, at which Classify's answer
+// can change with nothing else moving: a job stops being fresh at freshWindowDays+1 and
+// gains the "old" signal at oldAgeDays. A search index that stores the class must refresh
+// a job at these ages, since no write to the job marks them.
+func AgeCrossingDays() []int32 {
+	return []int32{freshWindowDays + 1, oldAgeDays}
+}
+
+// PostedAgeCrossingDays are the ages, in whole days since PostedAt, at which Classify's
+// evidence changes with nothing else moving: IsFakeFreshness turns off once the posted date
+// is older than freshWindowDays.
+func PostedAgeCrossingDays() []int32 {
+	return []int32{freshWindowDays + 1}
+}

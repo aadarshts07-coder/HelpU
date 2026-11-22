@@ -1,0 +1,532 @@
+package mentorship
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/strelov1/freehire/internal/dict/vocab"
+	"github.com/strelov1/freehire/internal/engage/slots"
+)
+
+// validInput is a profile submission that should always be accepted, so each test can
+// vary the one field it is about.
+func validInput() ProfileInput {
+	return ProfileInput{
+		UserID:      7,
+		CompanySlug: "acme",
+		Slug:        "jane-doe",
+		DisplayName: "Jane Doe",
+		Headline:    "Senior Backend Engineer",
+		Bio:         "Ten years of Go and Postgres.",
+		Topics:      []string{"career", "system-design"},
+		Languages:   []string{"en", "de"},
+		Timezone:    "Europe/Berlin",
+		Session: slots.SessionParams{
+			Duration:      time.Hour,
+			MinimumNotice: 2 * time.Hour,
+			Horizon:       30 * 24 * time.Hour,
+		},
+		MeetingURL: "https://meet.example.test/jane",
+	}
+}
+
+func newTestService(t *testing.T, repo *fakeRepo) *Service {
+	t.Helper()
+	return New(repo, Config{Now: func() time.Time {
+		return time.Date(2026, time.September, 7, 9, 0, 0, 0, time.UTC)
+	}})
+}
+
+func TestSubmitProfileStartsPending(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+
+	got, err := svc.SubmitProfile(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	if got.Status != StatusPending {
+		t.Errorf("status = %q, want %q", got.Status, StatusPending)
+	}
+	if got.Paused {
+		t.Error("a fresh profile is paused")
+	}
+}
+
+// An independent mentor, or one whose employer isn't in the catalogue, has no company to
+// name at all — only a company that IS supplied still has to name a real catalogue row
+// (see TestSubmitProfileReportsWhatTheDatabaseRefuses' unknown-company case).
+func TestSubmitProfileAcceptsNoCompany(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+
+	in := validInput()
+	in.CompanySlug = ""
+
+	got, err := svc.SubmitProfile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v, want no error for a company-less profile", err)
+	}
+	if got.CompanySlug != "" {
+		t.Errorf("CompanySlug = %q, want empty", got.CompanySlug)
+	}
+}
+
+// The moderation rule stated as a test, because it is the one an eager future change is
+// most likely to "improve": an approved referral offer is evidence for a human, never a
+// gate that approves anything.
+func TestAnApprovedReferralOfferDoesNotApproveAProfile(t *testing.T) {
+	repo := newFakeRepo()
+	repo.approvedReferralOffers[referralKey{userID: 7, company: "acme"}] = true
+	svc := newTestService(t, repo)
+
+	got, err := svc.SubmitProfile(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	if got.Status != StatusPending {
+		t.Errorf("status = %q, want %q — a referral offer is evidence, not approval", got.Status, StatusPending)
+	}
+
+	queue, err := svc.PendingQueue(context.Background())
+	if err != nil {
+		t.Fatalf("PendingQueue: %v", err)
+	}
+	if len(queue) != 1 || !queue[0].HasApprovedReferralOffer {
+		t.Error("the moderation queue does not surface the corroborating referral offer")
+	}
+}
+
+func TestSubmitProfileRefusesWhatCannotYieldASchedule(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ProfileInput)
+		want   error
+	}{
+		// A profile without a name is the anonymous referral offer with extra steps, and
+		// this marketplace's whole premise is that a mentor is chosen.
+		{"no name", func(in *ProfileInput) { in.DisplayName = "" }, ErrInvalidProfile},
+		{"a name of only spaces", func(in *ProfileInput) { in.DisplayName = "   " }, ErrInvalidProfile},
+		{"no headline", func(in *ProfileInput) { in.Headline = "" }, ErrInvalidProfile},
+		{"a headline of only spaces", func(in *ProfileInput) { in.Headline = "   " }, ErrInvalidProfile},
+		{"no topics", func(in *ProfileInput) { in.Topics = nil }, ErrInvalidProfile},
+		{"no languages", func(in *ProfileInput) { in.Languages = nil }, ErrInvalidProfile},
+		// A zone that does not resolve is not a cosmetic error: it is the ONLY thing that
+		// gives the mentor's stored hours a meaning, so a profile carrying one has no
+		// schedule at all.
+		{"an unresolvable timezone", func(in *ProfileInput) { in.Timezone = "Mars/Olympus_Mons" }, ErrInvalidProfile},
+		{"no timezone", func(in *ProfileInput) { in.Timezone = "" }, ErrInvalidProfile},
+		// "Local" resolves in Go and means the SERVER's clock. A mentor whose hours are
+		// interpreted in the server's zone is a mentor whose hours are wrong.
+		{"a timezone of Local", func(in *ProfileInput) { in.Timezone = "Local" }, ErrInvalidProfile},
+		{"a session that yields nothing", func(in *ProfileInput) { in.Session.Duration = 0 }, slots.ErrInvalidSessionParams},
+		{"no meeting link", func(in *ProfileInput) { in.MeetingURL = "" }, ErrInvalidProfile},
+		{"a meeting link that is not a URL", func(in *ProfileInput) { in.MeetingURL = "not a url" }, ErrInvalidProfile},
+		{"a meeting link that is not http", func(in *ProfileInput) { in.MeetingURL = "javascript:alert(1)" }, ErrInvalidProfile},
+		// A non-empty link is validated identically whether or not the mentor has a
+		// calendar — holding one is no excuse for a link that isn't a URL.
+		{"an invalid meeting link even with a connected calendar", func(in *ProfileInput) {
+			in.MeetingURL = "not a url"
+			in.HasCalendarLink = true
+		}, ErrInvalidProfile},
+		{"a seniority value outside the platform's vocabulary", func(in *ProfileInput) { in.Seniority = "guru" }, ErrInvalidProfile},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := validInput()
+			tc.mutate(&in)
+
+			if _, err := newTestService(t, newFakeRepo()).SubmitProfile(context.Background(), in); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// A mentor with a connected calendar.events grant needs no static meeting link at all: a
+// real one is minted per booking instead. A non-empty link is still validated normally
+// either way — see the table test above.
+func TestSubmitProfileAcceptsNoMeetingLinkWithAConnectedCalendar(t *testing.T) {
+	in := validInput()
+	in.MeetingURL = ""
+	in.HasCalendarLink = true
+
+	if _, err := newTestService(t, newFakeRepo()).SubmitProfile(context.Background(), in); err != nil {
+		t.Errorf("SubmitProfile: %v, want no error — a connected calendar makes the static link optional", err)
+	}
+}
+
+// Every value in the platform's seniority vocabulary is accepted, and so is leaving it
+// unset — the field is optional, unlike name/headline/topics/languages.
+// Seniority is normalised the same way every other free-text ProfileInput field is
+// (DisplayName, Headline, Bio, MeetingURL) — an untrimmed value from a caller other than
+// the fixed <select> the frontend uses must not be refused for whitespace alone.
+func TestSubmitProfileTrimsSeniority(t *testing.T) {
+	in := validInput()
+	in.Seniority = "  senior  "
+
+	profile, err := newTestService(t, newFakeRepo()).SubmitProfile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	if profile.Seniority != "senior" {
+		t.Errorf("Seniority = %q, want trimmed %q", profile.Seniority, "senior")
+	}
+}
+
+func TestSubmitProfileAcceptsEveryValidSeniorityAndEmpty(t *testing.T) {
+	for _, seniority := range append([]string{""}, vocab.SeniorityValues...) {
+		t.Run("seniority "+seniority, func(t *testing.T) {
+			in := validInput()
+			in.Seniority = seniority
+
+			if _, err := newTestService(t, newFakeRepo()).SubmitProfile(context.Background(), in); err != nil {
+				t.Errorf("SubmitProfile: %v, want no error for seniority %q", err, seniority)
+			}
+		})
+	}
+}
+
+// The slug is in the URL, so its shape is the same one usernames carry — and it is
+// COPIED rather than referenced, so a later username change cannot 404 every link
+// somebody has already shared. An empty slug is NOT in this list: it is no longer a
+// refusal, it is a request to derive one — see TestSubmitProfileWithoutASlugDerivesOneFromTheName.
+func TestSubmitProfileRefusesASlugThatCannotBeAURL(t *testing.T) {
+	for _, slug := range []string{"no", "Jane-Doe", "jane doe", "jane_doe", "-jane", "jane-", strings.Repeat("a", 31)} {
+		t.Run("slug "+slug, func(t *testing.T) {
+			in := validInput()
+			in.Slug = slug
+
+			if _, err := newTestService(t, newFakeRepo()).SubmitProfile(context.Background(), in); !errors.Is(err, ErrInvalidProfile) {
+				t.Errorf("slug %q: error = %v, want ErrInvalidProfile", slug, err)
+			}
+		})
+	}
+}
+
+func TestSubmitProfileReportsWhatTheDatabaseRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setUp func(*fakeRepo)
+		want  error
+	}{
+		{"a second profile for one account", func(r *fakeRepo) { r.createErr = ErrAlreadyAMentor }, ErrAlreadyAMentor},
+		{"a slug somebody already has", func(r *fakeRepo) { r.createErr = ErrSlugTaken }, ErrSlugTaken},
+		{"a company the catalogue does not carry", func(r *fakeRepo) { r.createErr = ErrCompanyNotFound }, ErrCompanyNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			tc.setUp(repo)
+
+			if _, err := newTestService(t, repo).SubmitProfile(context.Background(), validInput()); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// An empty URL slug is no longer a refusal: the mentor left it to the system, and the
+// system derives one from the display name — the field already required on this exact
+// form, so nothing new needs to be typed.
+func TestSubmitProfileWithoutASlugDerivesOneFromTheName(t *testing.T) {
+	repo := newFakeRepo()
+	in := validInput()
+	in.Slug = ""
+
+	got, err := newTestService(t, repo).SubmitProfile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	if got.Slug != "jane-doe" {
+		t.Errorf("slug = %q, want %q", got.Slug, "jane-doe")
+	}
+}
+
+// A slug the system derived can collide with one another mentor already holds — the
+// derivation only looks at the name, not the catalogue. The system SHALL resolve that
+// itself with the smallest free numbered variant rather than refusing the submission.
+func TestSubmitProfileWithoutASlugRetriesOnCollision(t *testing.T) {
+	repo := newFakeRepo()
+	if _, err := repo.CreateProfile(context.Background(), ProfileInput{UserID: 1, Slug: "jane-doe"}); err != nil {
+		t.Fatalf("seed CreateProfile: %v", err)
+	}
+
+	in := validInput()
+	in.UserID = 7
+	in.Slug = ""
+
+	got, err := newTestService(t, repo).SubmitProfile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	if got.Slug != "jane-doe-2" {
+		t.Errorf("slug = %q, want %q", got.Slug, "jane-doe-2")
+	}
+}
+
+// A display name with no latin letters or digits — an all-Cyrillic name, say — sanitizes
+// to nothing. The system SHALL fall back to a fixed base rather than refuse the
+// submission, exactly as username.Sanitize already falls back for an account username.
+func TestSubmitProfileWithoutASlugFallsBackWhenTheNameSanitizesToNothing(t *testing.T) {
+	repo := newFakeRepo()
+	in := validInput()
+	in.Slug = ""
+	in.DisplayName = "Иван Стрелов"
+
+	got, err := newTestService(t, repo).SubmitProfile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	if got.Slug != "user" {
+		t.Errorf("slug = %q, want %q", got.Slug, "user")
+	}
+}
+
+// An explicitly supplied slug that is already taken is refused outright — never
+// silently substituted with a suffixed variant. Substituting one would leave the
+// mentor with a URL that differs from what they typed and no indication that happened.
+func TestSubmitProfileWithAnExplicitTakenSlugIsRefusedWithoutRetrying(t *testing.T) {
+	repo := newFakeRepo()
+	if _, err := repo.CreateProfile(context.Background(), ProfileInput{UserID: 1, Slug: "jane-doe"}); err != nil {
+		t.Fatalf("seed CreateProfile: %v", err)
+	}
+	repo.createCalls = 0 // the seed call above doesn't count
+
+	in := validInput()
+	in.UserID = 7
+	in.Slug = "jane-doe"
+
+	_, err := newTestService(t, repo).SubmitProfile(context.Background(), in)
+	if !errors.Is(err, ErrSlugTaken) {
+		t.Errorf("error = %v, want ErrSlugTaken", err)
+	}
+	if repo.createCalls != 1 {
+		t.Errorf("CreateProfile called %d times, want exactly 1 — an explicit slug must never be silently retried", repo.createCalls)
+	}
+}
+
+func TestModerationRecordsWhoDecidedAndWhen(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+	submitted, err := svc.SubmitProfile(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+
+	approved, err := svc.Decide(context.Background(), submitted.ID, 99, StatusApproved)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if approved.Status != StatusApproved {
+		t.Errorf("status = %q, want approved", approved.Status)
+	}
+
+	t.Run("a second decision is refused", func(t *testing.T) {
+		if _, err := svc.Decide(context.Background(), submitted.ID, 99, StatusRejected); !errors.Is(err, ErrProfileNotPending) {
+			t.Errorf("error = %v, want ErrProfileNotPending", err)
+		}
+	})
+
+	t.Run("only approved and rejected are decisions", func(t *testing.T) {
+		for _, status := range []string{StatusPending, "paused", "", "APPROVED"} {
+			if _, err := svc.Decide(context.Background(), submitted.ID, 99, status); !errors.Is(err, ErrInvalidProfile) {
+				t.Errorf("status %q: error = %v, want ErrInvalidProfile", status, err)
+			}
+		}
+	})
+}
+
+// Pausing is the mentor's own switch and needs no moderator; it must not disturb what the
+// moderator decided, or resuming would mean re-entering the queue.
+func TestPausingAndResumingNeedsNoModerator(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+	submitted, err := svc.SubmitProfile(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	if _, err := svc.Decide(context.Background(), submitted.ID, 99, StatusApproved); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	paused, err := svc.SetPaused(context.Background(), validInput().UserID, true)
+	if err != nil {
+		t.Fatalf("SetPaused(true): %v", err)
+	}
+	if !paused.Paused || paused.Status != StatusApproved {
+		t.Errorf("paused=%v status=%q, want paused with the moderator's decision intact",
+			paused.Paused, paused.Status)
+	}
+
+	resumed, err := svc.SetPaused(context.Background(), validInput().UserID, false)
+	if err != nil {
+		t.Fatalf("SetPaused(false): %v", err)
+	}
+	if resumed.Paused || resumed.Status != StatusApproved {
+		t.Errorf("paused=%v status=%q, want unpaused and still approved", resumed.Paused, resumed.Status)
+	}
+}
+
+func TestOnlyTheOwnerMayEditOrPause(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+	if _, err := svc.SubmitProfile(context.Background(), validInput()); err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+
+	const stranger = 4242
+
+	if _, err := svc.SetPaused(context.Background(), stranger, true); !errors.Is(err, ErrProfileNotFound) {
+		t.Errorf("SetPaused by a stranger: error = %v, want ErrProfileNotFound", err)
+	}
+
+	in := validInput()
+	in.UserID = stranger
+	if _, err := svc.UpdateProfile(context.Background(), in); !errors.Is(err, ErrProfileNotFound) {
+		t.Errorf("UpdateProfile by a stranger: error = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// Editing must not send an approved mentor back to the queue: rewording a headline is not
+// a new claim about where somebody works.
+func TestEditingDoesNotResetModeration(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+	submitted, err := svc.SubmitProfile(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	if _, err := svc.Decide(context.Background(), submitted.ID, 99, StatusApproved); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	in := validInput()
+	in.Headline = "Staff Backend Engineer"
+	updated, err := svc.UpdateProfile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("UpdateProfile: %v", err)
+	}
+	if updated.Status != StatusApproved {
+		t.Errorf("status = %q after an edit, want approved", updated.Status)
+	}
+	if updated.Headline != "Staff Backend Engineer" {
+		t.Errorf("headline = %q, want the new one", updated.Headline)
+	}
+}
+
+// The slug is stable by design: the URL somebody shared must keep working.
+func TestEditingCannotChangeTheSlugOrTheCompany(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+	if _, err := svc.SubmitProfile(context.Background(), validInput()); err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+
+	in := validInput()
+	in.Slug = "someone-else"
+	in.CompanySlug = "othercorp"
+	updated, err := svc.UpdateProfile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("UpdateProfile: %v", err)
+	}
+	if updated.Slug != "jane-doe" {
+		t.Errorf("slug = %q, want the original — a shared link must not 404", updated.Slug)
+	}
+	if updated.CompanySlug != "acme" {
+		t.Errorf("company = %q, want the original — changing employer is a new profile, "+
+			"and a new moderation decision", updated.CompanySlug)
+	}
+}
+
+func TestReactivateWithNoProfileIsRefused(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+
+	if _, err := svc.Reactivate(context.Background(), 4242); !errors.Is(err, ErrProfileNotFound) {
+		t.Errorf("error = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// A moderator reads a profile by row id regardless of its status — the queue lists
+// pending rows, but the lookup itself carries no status guard: the caller (an id from a
+// moderator's own queue read) already establishes the context.
+func TestProfileForModerationReadsAnyStatus(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+	submitted, err := svc.SubmitProfile(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+
+	got, err := svc.ProfileForModeration(context.Background(), submitted.ID)
+	if err != nil {
+		t.Fatalf("ProfileForModeration: %v", err)
+	}
+	if got.ID != submitted.ID || got.Status != StatusPending {
+		t.Errorf("got id=%d status=%q, want id=%d status=%q", got.ID, got.Status, submitted.ID, StatusPending)
+	}
+}
+
+func TestProfileForModerationRefusesAnUnknownID(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+
+	if _, err := svc.ProfileForModeration(context.Background(), 999999); !errors.Is(err, ErrProfileNotFound) {
+		t.Errorf("error = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// ShowPhoto defaults off and round-trips through both create and update, independent
+// of every other field — a mentor's own opt-in, not a byproduct of anything else they
+// submit.
+func TestShowPhotoDefaultsOffAndRoundTripsThroughCreateAndUpdate(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newTestService(t, repo)
+
+	created, err := svc.SubmitProfile(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	if created.ShowPhoto {
+		t.Error("show_photo = true on a fresh profile, want false (off by default)")
+	}
+
+	in := validInput()
+	in.ShowPhoto = true
+	updated, err := svc.UpdateProfile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("UpdateProfile: %v", err)
+	}
+	if !updated.ShowPhoto {
+		t.Error("show_photo = false after opting in, want true")
+	}
+
+	in.ShowPhoto = false
+	updated, err = svc.UpdateProfile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("UpdateProfile: %v", err)
+	}
+	if updated.ShowPhoto {
+		t.Error("show_photo = true after opting back out, want false")
+	}
+}
+
+// A profile with no object storage and no notifier configured must still work: the
+// feature ships before every channel exists, exactly as the referral pings do.
+func TestAServiceWithNoNotifierStillWorks(t *testing.T) {
+	repo := newFakeRepo()
+	svc := New(repo, Config{Now: time.Now})
+	submitted, err := svc.SubmitProfile(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("SubmitProfile: %v", err)
+	}
+	repo.futureBookings[submitted.ID] = []Booking{{ID: uuid.New(), SeekerUserID: 11}}
+
+	if err := svc.Withdraw(context.Background(), validInput().UserID); err != nil {
+		t.Errorf("Withdraw with no notifier: %v", err)
+	}
+}

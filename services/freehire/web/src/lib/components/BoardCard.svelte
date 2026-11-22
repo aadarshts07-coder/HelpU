@@ -1,0 +1,213 @@
+<script lang="ts">
+  import BoardPostingStatus from './BoardPostingStatus.svelte';
+  import BoardRemoveButton from './BoardRemoveButton.svelte';
+  import BoardPreview from './BoardPreview.svelte';
+  import { Clock, FileCheck, Mail, MapPin, MessageSquare } from '@lucide/svelte';
+  import { companyLogoUrl } from '#lib/logo.js';
+  import { Badge, EntityLogo } from '#lib/ui/index.js';
+  import { humanizeStage } from '#lib/stages.js';
+  import { columnOf } from '#lib/board.js';
+  import { chasedLabel, cvOpenedLabel } from '#lib/followup.js';
+  import { autoApplyNeedsReviewBadge } from '#lib/autoApplyReview.js';
+  import type { MyJob } from '#lib/types.js';
+  import { messages } from './BoardCard.messages';
+  import { locale } from '#lib/i18n/currentLocale.svelte.js';
+  import { t } from '#lib/i18n/t.js';
+
+  let {
+    item,
+    onopen,
+    onremove,
+    removing = false,
+  }: {
+    item: MyJob;
+    onopen: (item: MyJob) => void;
+    onremove?: (item: MyJob) => void;
+    removing?: boolean;
+  } = $props();
+
+  // The card's aria-label is its name and REPLACES its content, so the indicator row is
+  // wired in as the description — otherwise stage/review/silence are never announced.
+  const indicatorsId = $props.id();
+  const hintId = `${indicatorsId}-hint`;
+  const locationId = `${indicatorsId}-location`;
+  const statusId = `${indicatorsId}-status`;
+  const hasStatus = $derived(Boolean(item.job?.closed_at || item.job?.application_deadline));
+  const s = $derived(t(messages, locale()));
+  // A stage that only repeats the column the card sits in ("Preparing" under Preparing)
+  // is said to assistive technology alone; a finer one ("Phone screen" under Interview)
+  // still shows.
+  const stageRepeatsColumn = $derived(item.stage === columnOf(item));
+
+  const hasNotes = $derived(!!item.notes && item.notes.trim().length > 0);
+  // pending_review (a decision to make) or blocked (a submission attempt stopped) —
+  // see autoApplyReview.ts for why the other four statuses show no badge here.
+  const needsAutoApplyReview = $derived(autoApplyNeedsReviewBadge(item.auto_apply_status));
+  // Both readings of a chased application, side by side: the badge says the employer
+  // is still quiet, the label says we already prodded them. Neither replaces the other.
+  const chased = $derived(chasedLabel(item));
+  // A further reading, and like the chase it sits beside the silence badge rather than instead
+  // of it: they read the CV and still have not answered.
+  const cvOpened = $derived(cvOpenedLabel(item));
+
+  // The posting is gone once it is deleted, and the card still has to render.
+  // The employer and role are carried by the application itself for exactly this.
+  const company = $derived(item.job?.company || item.company_slug);
+  const title = $derived(item.job?.title || item.role_title);
+  // Where the role is — what tells two applications to one employer apart when the titles
+  // match. The board has no flags, so the line is shown whole (truncated to one line).
+  const location = $derived(item.job?.location);
+
+  // Enter and Space open the application. This runs in the CAPTURE phase, and that is
+  // load-bearing rather than a style choice.
+  //
+  // svelte-dnd-action binds its own keydown to the wrapper element the column puts
+  // around each card, and on Enter/Space it starts a keyboard-driven drag and calls
+  // stopPropagation. Svelte 5 *delegates* ordinary `onkeydown` to the app root, so a
+  // bubble-phase handler here would be reached only after that wrapper listener has
+  // already stopped the event — the card would begin a drag and never open. Capture
+  // listeners are not delegated, so this one runs first and claims the key.
+  //
+  // Nothing is lost: the library's guard skips any target whose `disabled` is defined,
+  // so while this card was a <button> its keyboard drag never ran either. The keyboard's
+  // way to move a card is the stage picker in the panel this opens, and the card's
+  // description says so (hintId) — otherwise nothing tells a keyboard user it exists.
+  function openOnKey(e: KeyboardEvent) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault(); // Space would otherwise scroll the column
+    e.stopPropagation();
+    onopen(item);
+  }
+</script>
+
+<!-- The open target remains a div so the drag library can pick it up.
+     The remove button is a sibling, outside the open target.
+
+     That is not only a layout preference. svelte-dnd-action refuses to begin a drag
+     whose event target carries a `value` property — a guard written for <input>, which
+     a <button> also satisfies, its value being "" rather than undefined. This card used
+     to mount a button with `after:inset-0` stretched across its whole surface, so every
+     mousedown landed on that button and the card could not be picked up at all.
+
+     `role="button"` is an attribute, not an element, so this node has no `value` and the
+     guard passes anywhere on the card. The library suppresses the click that ends a real
+     drag, so opening and dragging do not collide. -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- The keyboard handler is `onkeydowncapture`, which the rule does not recognise. It
+     has to be on the capture phase (see openOnKey), and Enter and Space were both
+     confirmed to open the application in a browser.
+
+     `relative` keeps the `sr-only` move hint inside the card. That hint is absolutely
+     positioned, and without a positioned ancestor it escaped the column's scroll box and
+     stretched the page by the column's full height: blank scrolling past the footer. -->
+<div class="relative">
+  <BoardPreview {item}>
+    <div
+      role="button"
+      tabindex="0"
+      onclick={() => onopen(item)}
+      onkeydowncapture={openOnKey}
+      aria-label="Open {title} at {company || 'unknown company'}"
+      aria-describedby="{location ? `${locationId} ` : ''}{hasStatus ? `${statusId} ` : ''}{indicatorsId} {hintId}"
+      class="relative flex w-full cursor-pointer flex-col gap-1.5 rounded-lg border border-border bg-card p-3 text-left shadow-sm transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+    >
+      <!-- The company is the quiet eyebrow and the role the strong line, as on every job card. -->
+      <span
+        class="flex min-h-8 items-center gap-1.5 pr-11 text-xs font-medium text-muted-foreground sm:min-h-0 sm:pr-7"
+      >
+        <EntityLogo name={company} src={companyLogoUrl(company) ?? undefined} shape="square" size="xs" />
+        <span class="min-w-0 truncate">{company || 'Unknown company'}</span>
+      </span>
+      <span class="line-clamp-2 text-sm font-semibold">{title}</span>
+      {#if location}
+        <span id={locationId} title={location} class="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+          <MapPin class="size-3 shrink-0" aria-hidden="true" />
+          <span class="truncate">{location}</span>
+        </span>
+      {/if}
+      <!-- Indicators, every one of them. The silence marker used to be the way into the
+       follow-up draft; that offer moved into the opened application when the card gave
+       up its controls, and the marker went back to reporting. -->
+      <BoardPostingStatus job={item.job} id={statusId} />
+      <span id={indicatorsId} class="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+        {#if item.stage}
+          <Badge variant="secondary" class={stageRepeatsColumn ? 'sr-only' : undefined}
+            >{humanizeStage(item.stage, locale())}</Badge
+          >
+        {/if}
+        {#if needsAutoApplyReview}
+          <span
+            class="flex items-center gap-1 text-xs font-medium text-warning-strong"
+            title="Auto-apply needs your review"
+            aria-label="Auto-apply needs your review"
+          >
+            <span class="size-1.5 shrink-0 rounded-full bg-warning-strong" aria-hidden="true"></span>
+            <FileCheck class="size-3 shrink-0" aria-hidden="true" />
+            Review
+          </span>
+        {/if}
+        {#if item.silence_state === 'silent'}
+          <span
+            class="flex items-center gap-0.5 text-xs tabular-nums text-warning-strong"
+            title="No reply for {item.days_silent} days"
+            aria-label="No reply for {item.days_silent} days"
+          >
+            <Clock class="size-3 shrink-0" aria-hidden="true" />
+            {item.days_silent}d
+          </span>
+        {:else if item.silence_state === 'unconfirmed'}
+          <span
+            class="flex items-center gap-0.5 text-xs text-muted-foreground"
+            title="Mail may be from them — confirm the link to know"
+            aria-label="Mail awaiting confirmation"
+          >
+            <MessageSquare class="size-3 shrink-0" aria-hidden="true" />
+            ?
+          </span>
+        {/if}
+        {#if chased}
+          <span class="text-xs text-muted-foreground">{chased}</span>
+        {/if}
+        {#if cvOpened}
+          <span
+            class="text-xs text-muted-foreground"
+            title="A link in the CV you sent was opened. Company mail scanners follow links automatically, so this is a hint rather than proof someone read it."
+            >{cvOpened}</span
+          >
+        {/if}
+        {#if item.email_count > 0}
+          <span
+            class="flex items-center gap-0.5 text-xs tabular-nums text-muted-foreground"
+            title="{item.email_count} linked email{item.email_count === 1 ? '' : 's'}"
+            aria-label="{item.email_count} linked email{item.email_count === 1 ? '' : 's'}"
+          >
+            <Mail class="size-3 shrink-0" aria-hidden="true" />
+            {item.email_count}
+          </span>
+        {/if}
+        {#if hasNotes}
+          <svg
+            class="size-3 shrink-0 text-muted-foreground"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            role="img"
+            aria-label="Has notes"
+          >
+            <title>Has notes</title>
+            <path d="M8 7h8M8 12h8M8 17h5" />
+          </svg>
+        {/if}
+      </span>
+      <span id={hintId} class="sr-only">{s.moveHint}</span>
+    </div>
+  </BoardPreview>
+  {#if onremove}
+    <span class="absolute right-1.5 top-1.5">
+      <BoardRemoveButton {item} {onremove} disabled={removing} />
+    </span>
+  {/if}
+</div>

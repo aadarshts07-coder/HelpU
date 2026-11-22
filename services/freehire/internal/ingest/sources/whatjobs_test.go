@@ -1,0 +1,471 @@
+package sources
+
+import (
+	"context"
+	"encoding/json"
+	"net/url"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/strelov1/freehire/internal/dict/vocab"
+)
+
+// recordingJSON is a JSONGetter that records every URL it is asked for and replies with the first
+// canned body whose match substring the URL contains, so a test can assert on the query string the
+// adapter builds — the feed's traps are all in the query, not the body.
+type recordingJSON struct {
+	routes []struct{ match, body string }
+	urls   []string
+	err    error
+}
+
+func (r *recordingJSON) route(match, body string) *recordingJSON {
+	r.routes = append(r.routes, struct{ match, body string }{match, body})
+	return r
+}
+
+func (r *recordingJSON) GetJSON(_ context.Context, u string, v any) error {
+	r.urls = append(r.urls, u)
+	if r.err != nil {
+		return r.err
+	}
+	for _, rt := range r.routes {
+		if strings.Contains(u, rt.match) {
+			return json.Unmarshal([]byte(rt.body), v)
+		}
+	}
+	return json.Unmarshal([]byte(`{"data":[]}`), v)
+}
+
+// query returns the parsed query of the n-th recorded request.
+func (r *recordingJSON) query(t *testing.T, n int) url.Values {
+	t.Helper()
+	if n >= len(r.urls) {
+		t.Fatalf("only %d request(s) recorded, wanted #%d", len(r.urls), n)
+	}
+	u, err := url.Parse(r.urls[n])
+	if err != nil {
+		t.Fatalf("parse recorded url: %v", err)
+	}
+	return u.Query()
+}
+
+func TestWhatJobsProvider(t *testing.T) {
+	if got := NewWhatJobs(nil, "7065").Provider(); got != "whatjobs" {
+		t.Errorf("Provider() = %q, want whatjobs", got)
+	}
+}
+
+// The feed aggregates many employers under one account, so it is an aggregator (its copy may
+// lose to a first-party ATS posting of the same role). It is NOT boardless — the board carries
+// the search keyword and an entry without one cannot be crawled — and NOT fullCatalog, because
+// one crawl reads a keyword's first pages, never the whole catalogue.
+func TestWhatJobsIsKeywordBoardedAggregator(t *testing.T) {
+	s := NewWhatJobs(nil, "7065")
+
+	if _, ok := s.(aggregator); !ok {
+		t.Error("whatjobs should implement the aggregator marker")
+	}
+	if _, ok := s.(boardless); ok {
+		t.Error("whatjobs must NOT be boardless: the keyword board is mandatory")
+	}
+	if _, ok := s.(fullCatalog); ok {
+		t.Error("whatjobs must NOT be fullCatalog: a crawl sees only a keyword slice")
+	}
+}
+
+// The board's keyword drives the search, and the account credential rides the query. limit is
+// pinned to the feed's maximum: anything larger is silently clamped, and limit=1 combined with a
+// keyword returns an empty page with per_page 0 — a pagination bug in the feed.
+func TestWhatJobsRequestCarriesPublisherAndKeyword(t *testing.T) {
+	fake := (&recordingJSON{}).route("jobs.json", `{"data":[]}`)
+
+	if _, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{
+		Company: "WhatJobs — Backend",
+		Board:   "backend engineer",
+	}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	q := fake.query(t, 0)
+	for _, want := range []struct{ key, val string }{
+		{"publisher", "7065"},
+		{"keyword", "backend engineer"},
+		{"limit", "50"},
+		{"page", "1"},
+	} {
+		if got := q.Get(want.key); got != want.val {
+			t.Errorf("query %s = %q, want %q", want.key, got, want.val)
+		}
+	}
+	if q.Get("user_ip") == "" {
+		t.Error("user_ip is mandatory and must be sent")
+	}
+}
+
+// A slash anywhere in the user_agent value makes the edge redirect the request with the value
+// corrupted (Mozilla/5.0 arrives as Mozilla%215.0), which is why every code sample in the vendor's
+// own documentation fails. The parameter is optional, so the adapter simply never sends it.
+func TestWhatJobsRequestSendsNoUserAgent(t *testing.T) {
+	fake := (&recordingJSON{}).route("jobs.json", `{"data":[]}`)
+
+	if _, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{Board: "devops"}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if got, ok := fake.query(t, 0)["user_agent"]; ok {
+		t.Errorf("user_agent must not be sent, got %q", got)
+	}
+	for _, u := range fake.urls {
+		if strings.Contains(u, "user_agent") {
+			t.Errorf("url mentions user_agent: %s", u)
+		}
+	}
+}
+
+// whatjobsPage is the feed's real envelope, trimmed. snippet carries the FULL description despite
+// its name, and the tracked url is what the native id is read from.
+const whatjobsPage = `{"data":[
+{"title":"Lead Backend Engineer","company":"Duolingo","location":"New York","postcode":"10001",
+ "snippet":"<p>Own the scoring platform.</p>\n#J-18808-Ljbffr","age":"July 28th, 2026","age_days":1,
+ "salary":"0.000000 - 0.000000","job_type":"","logo":null,
+ "url":"https://www.whatjobs.com/pub_api__cpl__2737655843__7065?utm_campaign=publisher&utm_medium=api&utm_source=7065&geoID=25088"},
+{"title":"No tracked id","company":"Nowhere","location":"Austin","postcode":"73301",
+ "snippet":"<p>Should be skipped.</p>","age_days":3,"url":"https://www.whatjobs.com/some-other-page"}
+],"total":350,"per_page":"50","current_page":1,"last_page":7}`
+
+// The native id is the tracked URL's pub_api__cpl__<id>__<publisher> segment; a posting whose URL
+// lacks it is dropped rather than stored under a guessed id, which would collide on the dedup key.
+// The tracked URL is stored verbatim: it is not IP-bound, so a stored copy stays valid for any
+// later visitor and the publisher attribution survives.
+func TestWhatJobsFetchMapsPostingsAndSkipsUntrackedOnes(t *testing.T) {
+	fake := (&recordingJSON{}).route("page=1", whatjobsPage)
+
+	jobs, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{
+		Company: "WhatJobs — Backend",
+		Board:   "backend engineer",
+	})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("got %d jobs, want 1 (the untracked posting dropped)", len(jobs))
+	}
+
+	j := jobs[0]
+	if j.ExternalID != "2737655843" {
+		t.Errorf("ExternalID = %q, want the cpl id 2737655843", j.ExternalID)
+	}
+	// The employer comes from the posting, never from the entry's display label.
+	if j.Company != "Duolingo" {
+		t.Errorf("Company = %q, want Duolingo (not the board entry's label)", j.Company)
+	}
+	if j.Title != "Lead Backend Engineer" {
+		t.Errorf("Title = %q", j.Title)
+	}
+	if !strings.Contains(j.URL, "pub_api__cpl__2737655843__7065") {
+		t.Errorf("URL lost the tracked path: %q", j.URL)
+	}
+	if !strings.Contains(j.URL, "utm_source=7065") {
+		t.Errorf("URL lost its attribution query: %q", j.URL)
+	}
+	if !strings.Contains(j.Description, "Own the scoring platform") {
+		t.Errorf("Description lost the body: %q", j.Description)
+	}
+}
+
+// 96% of the feed's descriptions end with a reseller's tracking signature. It is not content —
+// it identifies the network the posting was resold through — so it must not reach the catalogue.
+func TestWhatJobsStripsResellerSignature(t *testing.T) {
+	fake := (&recordingJSON{}).route("page=1", whatjobsPage)
+
+	jobs, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{Board: "backend engineer"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) == 0 {
+		t.Fatal("no jobs")
+	}
+
+	got := jobs[0].Description
+	for _, marker := range []string{"#J-18808-Ljbffr", "Ljbffr"} {
+		if strings.Contains(got, marker) {
+			t.Errorf("Description still carries the reseller marker %q: %q", marker, got)
+		}
+	}
+	if !strings.Contains(got, "Own the scoring platform") {
+		t.Errorf("stripping ate the real body: %q", got)
+	}
+}
+
+// The feed names a city but no country, and its cities collide with better-known foreign ones
+// (London is Ohio here, Vienna is Virginia). The publisher id is per-country by the vendor's
+// design and this account serves US inventory, so the country is stated rather than left to be
+// guessed from a city name — without it a third of the postings resolve to no country at all.
+func TestWhatJobsStatesTheAccountCountry(t *testing.T) {
+	fake := (&recordingJSON{}).route("page=1", whatjobsPage)
+
+	jobs, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{Board: "backend engineer"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) == 0 {
+		t.Fatal("no jobs")
+	}
+
+	got := jobs[0].Location
+	if !strings.Contains(got, "New York") {
+		t.Errorf("Location lost the city: %q", got)
+	}
+	if !strings.Contains(got, "United States") {
+		t.Errorf("Location = %q, want the account's country stated", got)
+	}
+}
+
+// A posting with no city still belongs to the account's country, and must not arrive with a
+// dangling separator the geography tokenizer would read as an empty token.
+func TestWhatJobsCountryOnlyWhenCityMissing(t *testing.T) {
+	page := `{"data":[{"title":"Remote SRE","company":"Acme","location":"","postcode":"",
+	 "snippet":"<p>Body.</p>","url":"https://www.whatjobs.com/pub_api__cpl__99__7065"}]}`
+	fake := (&recordingJSON{}).route("page=1", page)
+
+	jobs, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{Board: "sre"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("got %d jobs, want 1", len(jobs))
+	}
+	if got := jobs[0].Location; got != "United States" {
+		t.Errorf("Location = %q, want a bare %q", got, "United States")
+	}
+}
+
+// age/age_days report how long the record has sat in the reseller's index, not when the employer
+// published the role — postings from unrelated companies routinely share one value — so they must
+// never become a posting date. Leaving it unset lets freshness fall back to first-seen, which is
+// true if less precise.
+func TestWhatJobsNeverDatesAPostingFromAge(t *testing.T) {
+	fake := (&recordingJSON{}).route("page=1", whatjobsPage)
+
+	jobs, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{Board: "backend engineer"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) == 0 {
+		t.Fatal("no jobs")
+	}
+	if jobs[0].PostedAt != nil {
+		t.Errorf("PostedAt = %v, want nil: age_days is the reseller's index age", *jobs[0].PostedAt)
+	}
+}
+
+// The publisher id is the account credential, so it lives in the environment and gates the
+// CRAWL registry: an unconfigured host must not register a provider that would 410 every board.
+// It does NOT gate the taxonomy — whatjobs resells first-party ATS postings, so a keyless
+// reindex that could not see it as an aggregator would leave every copy unsuppressed.
+func TestWhatJobsPublisherIDGatesTheCrawlRegistry(t *testing.T) {
+	clearCrawlCredentials(t)
+	if _, ok := All(NewClient())["whatjobs"]; ok {
+		t.Error("All(client) should NOT register whatjobs without a us: entry in WHATJOBS_PUBLISHER_IDS")
+	}
+
+	t.Setenv("WHATJOBS_PUBLISHER_IDS", "us:7065")
+	if _, ok := All(NewClient())["whatjobs"]; !ok {
+		t.Error("WHATJOBS_PUBLISHER_IDS should be the variable that admits whatjobs to the crawl registry")
+	}
+}
+
+// Every market's credential gates only its own provider — an ingest host configured for one
+// market must not register another it has no id for. whatjobsMarketBoardFiles (defined in this
+// test) doubles as the market list this test iterates.
+func TestWhatJobsMarketPublisherIDGatesItsOwnProviderIndependently(t *testing.T) {
+	clearCrawlCredentials(t)
+	t.Setenv("WHATJOBS_PUBLISHER_IDS", "us:7065")
+	reg := All(NewClient())
+	if _, ok := reg["whatjobs"]; !ok {
+		t.Error("whatjobs should be registered with a us: entry in WHATJOBS_PUBLISHER_IDS")
+	}
+	for _, m := range whatjobsMarkets {
+		if m.code == "us" {
+			continue
+		}
+		if _, ok := reg[m.provider]; ok {
+			t.Errorf("All(client) should NOT register %q without a %s: entry in WHATJOBS_PUBLISHER_IDS", m.provider, m.code)
+		}
+	}
+
+	t.Setenv("WHATJOBS_PUBLISHER_IDS", "us:7065,br:7076")
+	reg = All(NewClient())
+	if _, ok := reg["whatjobs-br"]; !ok {
+		t.Error("a br: entry in WHATJOBS_PUBLISHER_IDS should admit whatjobs-br to the crawl registry")
+	}
+	if _, ok := reg["whatjobs-de"]; ok {
+		t.Error("All(client) should NOT register whatjobs-de: it has no id: entry")
+	}
+}
+
+// Each market is a distinct account with its own id space for the tracked-URL posting id, so
+// each must carry a distinct provider name — sharing one would let two markets' postings
+// collide on the dedup key (source, external_id).
+func TestWhatJobsMarketsHaveDistinctProviders(t *testing.T) {
+	seen := make(map[string]string)
+	for _, m := range whatjobsMarkets {
+		got := NewWhatJobsMarket(nil, "id", m.code).Provider()
+		if got != m.provider {
+			t.Errorf("market %q: Provider() = %q, want %q", m.code, got, m.provider)
+		}
+		if other, dup := seen[got]; dup {
+			t.Errorf("provider %q used by both market %q and %q", got, m.code, other)
+		}
+		seen[got] = m.code
+	}
+}
+
+// Each market's postings must be stated as ITS country, not fall back to another market's — the
+// markets share the same mapping code, so this guards against country becoming a shared
+// package-level value again instead of a per-adapter field.
+func TestWhatJobsMarketsStateTheirOwnCountry(t *testing.T) {
+	for _, m := range whatjobsMarkets {
+		page := `{"data":[{"title":"Backend Developer","company":"Acme","location":"Somewhere",
+		 "snippet":"<p>Body.</p>","url":"https://whatjobs.com/pub_api__cpl__1__999"}]}`
+		fake := (&recordingJSON{}).route("page=1", page)
+
+		jobs, err := NewWhatJobsMarket(fake, "id", m.code).Fetch(context.Background(), CompanyEntry{Board: "backend developer"})
+		if err != nil {
+			t.Fatalf("market %q: Fetch: %v", m.code, err)
+		}
+		if len(jobs) != 1 {
+			t.Fatalf("market %q: got %d jobs, want 1", m.code, len(jobs))
+		}
+		if got := jobs[0].Location; got != "Somewhere, "+m.country {
+			t.Errorf("market %q: Location = %q, want the account's %q country stated", m.code, got, m.country)
+		}
+	}
+}
+
+// A keyword that is blank after trimming must never be sent. Config validation only rejects an
+// EMPTY board, so an entry holding spaces slips through — and the feed answers a blank keyword with
+// its entire unfiltered inventory (32k postings for "   ", 560k for ""), which a single stray board
+// entry would pour into the catalogue. The adapter refuses instead of crawling.
+func TestWhatJobsRefusesABlankKeyword(t *testing.T) {
+	for _, board := range []string{"", "   ", "\t\n"} {
+		fake := (&recordingJSON{}).route("jobs.json", whatjobsPage)
+
+		_, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{
+			Company: "WhatJobs — oops",
+			Board:   board,
+		})
+		if err == nil {
+			t.Errorf("Fetch with board %q should fail, not crawl the whole feed", board)
+		}
+		if len(fake.urls) != 0 {
+			t.Errorf("board %q: adapter issued %d request(s), want none", board, len(fake.urls))
+		}
+	}
+}
+
+// The whole-inventory board is the deliberate way to ask for everything an account carries: it
+// sends the empty keyword the feed answers with its full pool, and keeps every posting, since there
+// is no keyword for a posting to corroborate.
+func TestWhatJobsWholeInventoryBoardSendsNoKeywordAndKeepsEverything(t *testing.T) {
+	page := `{"data":[
+	  {"title":"Cajero","company":"Super","location":"San José","snippet":"<p>Atención al cliente.</p>","url":"https://whatjobs.com/pub_api__cpl__1__7094"},
+	  {"title":"Enfermera","company":"Clínica","location":"Heredia","snippet":"<p>Turnos.</p>","url":"https://whatjobs.com/pub_api__cpl__2__7094"}]}`
+	fake := (&recordingJSON{}).route("page=1", page)
+
+	jobs, err := NewWhatJobsMarket(fake, "7094", "cr").Fetch(context.Background(), CompanyEntry{Board: " * "})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	q := fake.query(t, 0)
+	if kw, ok := q["keyword"]; !ok || kw[0] != "" {
+		t.Errorf("keyword = %v, want the empty keyword sent explicitly", kw)
+	}
+	if len(jobs) != 2 {
+		t.Errorf("got %d jobs, want both postings kept", len(jobs))
+	}
+}
+
+// A keyword padded with whitespace is still a real keyword; only a blank one is refused.
+func TestWhatJobsTrimsThePaddedKeyword(t *testing.T) {
+	fake := (&recordingJSON{}).route("jobs.json", `{"data":[]}`)
+
+	if _, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{Board: "  golang  "}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := fake.query(t, 0).Get("keyword"); got != "golang" {
+		t.Errorf("keyword = %q, want the trimmed %q", got, "golang")
+	}
+}
+
+// If the feed ever changes its tracked-URL shape, every posting loses its native id and the crawl
+// returns nothing. That failure is invisible on its own: a provider that ingested zero jobs is
+// skipped by the sweep, so the existing rows would sit open forever while nothing refreshed them.
+// A page that carried postings yet yielded no usable id is therefore an error, not an empty result.
+func TestWhatJobsUnrecognizedURLShapeIsAnError(t *testing.T) {
+	// A full page whose urls carry no pub_api__cpl__ segment at all.
+	fake := (&recordingJSON{}).route("page=1", `{"data":[
+	 {"title":"A","company":"Acme","location":"Austin","snippet":"<p>x</p>","url":"https://www.whatjobs.com/jobs/a-1"},
+	 {"title":"B","company":"Acme","location":"Austin","snippet":"<p>y</p>","url":"https://www.whatjobs.com/jobs/b-2"}
+	]}`)
+
+	_, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{Board: "golang"})
+	if err == nil {
+		t.Fatal("a page of postings with no recognizable ids must fail the board, not read as empty")
+	}
+	if !strings.Contains(err.Error(), "golang") {
+		t.Errorf("error should name the keyword: %v", err)
+	}
+}
+
+// A page that merely MIXES usable and unusable postings is normal — only a page with nothing usable
+// signals the format changed.
+func TestWhatJobsMixedPageIsNotAnError(t *testing.T) {
+	fake := (&recordingJSON{}).route("page=1", whatjobsPage).route("page=2", `{"data":[]}`)
+
+	// The keyword must corroborate the fixture's posting, else the drop under test is ambiguous with
+	// a corroboration drop.
+	jobs, err := NewWhatJobs(fake, "7065").Fetch(context.Background(), CompanyEntry{Board: "backend engineer"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Errorf("got %d jobs, want 1", len(jobs))
+	}
+}
+
+// The feed answers a rejected publisher id with 410 and an "Invalid Publisher" body. That is a
+// board-level failure: the run must count it and close nothing, rather than read an empty result as
+// a keyword that ran dry.
+func TestWhatJobsRejectedPublisherIsABoardFailure(t *testing.T) {
+	fake := &recordingJSON{err: &StatusError{Method: "GET", Code: 410, URL: whatjobsFeedURL}}
+
+	jobs, err := NewWhatJobs(fake, "bad-id").Fetch(context.Background(), CompanyEntry{Board: "devops"})
+	if err == nil {
+		t.Fatal("Fetch should fail when the feed rejects the publisher id")
+	}
+	if jobs != nil {
+		t.Errorf("Fetch returned %d jobs alongside the error, want none", len(jobs))
+	}
+	if !strings.Contains(err.Error(), "devops") {
+		t.Errorf("error should name the keyword that failed: %v", err)
+	}
+}
+
+// The source filter offers WhatJobs once (vocab.SourceFamilies). A market added to
+// whatjobsMarkets without joining that list would show up as a separate picker entry.
+func TestWhatJobsFamilyListsEveryMarket(t *testing.T) {
+	var providers []string
+	for _, m := range whatjobsMarkets {
+		providers = append(providers, m.provider)
+	}
+	got := append([]string(nil), vocab.SourceFamilies["whatjobs"]...)
+	sort.Strings(providers)
+	sort.Strings(got)
+	if !reflect.DeepEqual(providers, got) {
+		t.Errorf("vocab.SourceFamilies[whatjobs] = %v, markets = %v", got, providers)
+	}
+}

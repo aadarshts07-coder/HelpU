@@ -1,0 +1,125 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/strelov1/freehire/internal/api/apigen"
+	"github.com/strelov1/freehire/internal/platform/db"
+	"github.com/strelov1/freehire/internal/platform/pgconv"
+)
+
+// notificationOut is the public shape of one user_notifications row. No internal job id is
+// exposed, only the public slug (same rule as DigestJob). jobs passes the stored JSON
+// through and is omitted for every kind but a multi-job digest.
+func notificationOut(id int64, kind, title, body string, publicSlug pgtype.Text, jobs json.RawMessage, createdAt, readAt pgtype.Timestamptz) apigen.Notification {
+	out := apigen.Notification{
+		ID: id, Kind: apigen.NotificationKind(kind), Title: title, Body: body,
+		PublicSlug: nilString(nil),
+		CreatedAt:  nilDateTime(pgconv.TimePtr(createdAt)),
+		ReadAt:     nilDateTime(pgconv.TimePtr(readAt)),
+	}
+	// Written by notify.JobsSnapshot, so the stored JSON is always this shape; a NULL or a
+	// literal null leaves the field out.
+	if len(jobs) > 0 {
+		_ = json.Unmarshal(jobs, &out.Jobs)
+	}
+	if publicSlug.Valid {
+		out.PublicSlug = nilString(&publicSlug.String)
+	}
+	return out
+}
+
+// ListNotifications returns the caller's notification-center entries, newest first.
+// meta.unread_count comes from one query alongside the total so both describe the same set.
+// Cookie-only.
+func (h *authHandlers) ListNotifications(ctx context.Context, _ apigen.ListNotificationsParams) (*apigen.NotificationPage, error) {
+	userID, err := requireUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	limit, offset := contractPageBounded(ctx, defaultLimit, maxLimit)
+
+	rows, err := h.queries.ListUserNotifications(ctx, db.ListUserNotificationsParams{
+		UserID: userID, Lim: int32(limit), Off: int32(offset),
+	})
+	if err != nil {
+		return nil, err
+	}
+	counts, err := h.queries.CountUserNotifications(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]apigen.Notification, len(rows))
+	for i, r := range rows {
+		out[i] = notificationOut(r.ID, r.Kind, r.Title, r.Body, r.PublicSlug, r.Jobs, r.CreatedAt, r.ReadAt)
+	}
+	return &apigen.NotificationPage{
+		Data: out,
+		Meta: apigen.NotificationListMeta{
+			Total: counts.Total, UnreadCount: counts.Unread, Limit: int64(limit), Offset: int64(offset),
+		},
+	}, nil
+}
+
+// GetNotification returns one of the caller's notifications, with its jobs snapshot when it
+// has one (the read behind a direct visit to /my/notifications/[id]/jobs). Another user's id
+// and a nonexistent one both 404. Cookie-only.
+func (h *authHandlers) GetNotification(ctx context.Context, params apigen.GetNotificationParams) (*apigen.GetNotificationOK, error) {
+	userID, err := requireUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id, err := contractPathID(params.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	r, err := h.queries.GetNotification(ctx, db.GetNotificationParams{ID: id, UserID: userID})
+	if err != nil {
+		return nil, err // pgx.ErrNoRows → 404 via the central error handler
+	}
+	return &apigen.GetNotificationOK{Data: notificationOut(r.ID, r.Kind, r.Title, r.Body, r.PublicSlug, r.Jobs, r.CreatedAt, r.ReadAt)}, nil
+}
+
+// MarkNotificationRead marks one of the caller's notifications read. Idempotent; another
+// user's id and a nonexistent one both 404. Cookie-only.
+func (h *authHandlers) MarkNotificationRead(ctx context.Context, params apigen.MarkNotificationReadParams) error {
+	userID, err := requireUserIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	id, err := contractPathID(params.ID)
+	if err != nil {
+		return err
+	}
+
+	affected, err := h.queries.MarkNotificationRead(ctx, db.MarkNotificationReadParams{
+		ID: id, UserID: userID,
+	})
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "notification not found")
+	}
+	return nil
+}
+
+// MarkAllNotificationsRead marks every currently-unread notification of the
+// caller's read in one call, and reports how many it marked. Cookie-only.
+func (h *authHandlers) MarkAllNotificationsRead(ctx context.Context) (*apigen.MarkAllNotificationsReadOK, error) {
+	userID, err := requireUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	marked, err := h.queries.MarkAllNotificationsRead(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &apigen.MarkAllNotificationsReadOK{Data: apigen.NotificationsMarked{Marked: marked}}, nil
+}

@@ -1,0 +1,73 @@
+// The signed-in candidate's screening answers — the handful of questions that repeat
+// across ATS forms (visa, salary, notice period, relocation, …) and no CV states.
+//
+// A shared store rather than a per-page fetch because two surfaces now read the same
+// answer: the Screening section edits it, and profile completeness reads whether it has
+// been filled in at all. One GET serves both, and the profile layout warms it beside the
+// profile and résumé so the completeness summary can count it without a second request.
+//
+// SSR-safe and auth-agnostic (see UserResource): the load is a browser-only no-op and
+// the answers stay null for signed-out users.
+
+import { api } from '#lib/api.js';
+import type { Answers } from '#lib/generated/contracts.js';
+import { serialQueue } from '#lib/serialQueue.js';
+import { UserResource } from '#lib/userResource.svelte.js';
+
+class ScreeningStore extends UserResource<Answers | null> {
+  // Reassigned (never mutated in place) on every change, so $state.raw is enough.
+  #answers = $state.raw<Answers | null>(null);
+  // Saves go one at a time, so two dropdowns picked a moment apart reach the server in the
+  // order they were picked and the last pick is the one that stays.
+  #queue = serialQueue();
+
+  get answers(): Answers | null {
+    return this.#answers;
+  }
+
+  // The endpoint is best-effort on the profile: a failure must not error the page.
+  // Resolving with the copy already held (instead of letting the base swallow the
+  // rejection and leave `loaded` false) lets completeness settle on "not filled" rather
+  // than hiding its summary forever, and keeps a failed refresh after a save from
+  // blanking the form, which re-seeds itself from this value.
+  protected async load(): Promise<Answers | null> {
+    try {
+      return await api.getScreeningAnswers();
+    } catch (err) {
+      console.warn('screening answers: load failed', err);
+      return this.#answers;
+    }
+  }
+
+  protected apply(row: Answers | null) {
+    this.#answers = row;
+  }
+
+  /** Save part of the answers. The PUT answers with the whole stored record, so that
+   *  becomes the current copy with no re-read after it. A save belongs to whoever was
+   *  signed in when it was made, so a sign-out in between drops it, checked twice: before
+   *  sending (one still waiting in the queue would otherwise go out on the NEXT account's
+   *  cookie) and on the answer (one already sent must not refill the store). */
+  //
+  // `withdrawn` names answers to withdraw: leaving a field out of `patch` keeps it as
+  // stored. It is asked when the save is SENT, not when it is queued — an answer emptied
+  // while an earlier save that stores it is still on its way is not stored yet at queue
+  // time, and would be left behind.
+  save(patch: Partial<Answers>, withdrawn: () => (keyof Answers)[] = () => []): Promise<void> {
+    const generation = this.generation;
+    return this.#queue(async () => {
+      if (generation !== this.generation) return;
+      const cleared = withdrawn();
+      const answers = await api.updateScreeningAnswers(cleared.length > 0 ? { ...patch, clear: cleared } : patch);
+      if (generation !== this.generation) return;
+      this.#answers = answers;
+      this.markLoaded();
+    });
+  }
+
+  protected clearState() {
+    this.#answers = null;
+  }
+}
+
+export const screeningStore = new ScreeningStore();

@@ -1,0 +1,74 @@
+package buddy
+
+import (
+	"reflect"
+	"regexp"
+	"testing"
+
+	"github.com/strelov1/freehire/internal/candidate/resumeextract"
+)
+
+func cvWithTitle(title string) resumeextract.Structured {
+	return resumeextract.Structured{Experience: []resumeextract.Experience{{Title: title, Current: true}}}
+}
+
+func TestRankingKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		in   Inputs
+		want Keys
+	}{
+		{"category from title", Inputs{CV: cvWithTitle("Senior Backend Engineer")}, Keys{Category: "backend"}},
+		{"title wins over specialization", Inputs{CV: cvWithTitle("Senior Backend Engineer"), Specializations: []string{"design"}}, Keys{Category: "backend"}},
+		{"specialization fallback", Inputs{Specializations: []string{"data", "design"}}, Keys{Category: "data"}},
+		{"nothing known", Inputs{}, Keys{}},
+		{"cv geography wins", Inputs{Countries: []string{"de"}, Regions: []string{"eu"}, BaseCountry: "us"}, Keys{Countries: []string{"de"}, Regions: []string{"eu"}}},
+		{"empty-but-known cv geography is kept", Inputs{Countries: []string{}, BaseCountry: "us"}, Keys{Countries: []string{}}},
+		{"regions without countries suppress the base fallback", Inputs{Regions: []string{"eu"}, BaseCountry: "us"}, Keys{Regions: []string{"eu"}}},
+		{"base country fallback", Inputs{BaseCountry: "us"}, Keys{Countries: []string{"us"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rankingKeys(tt.in); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("rankingKeys = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+var handleShape = regexp.MustCompile(`^[a-z]+-[a-z]+-[1-9][0-9]{1,3}$`)
+
+func TestGenerateHandleShape(t *testing.T) {
+	for range 50 {
+		h := GenerateHandle()
+		if !handleShape.MatchString(h) {
+			t.Fatalf("unexpected handle %q", h)
+		}
+	}
+}
+
+// The unread notice opens the conversation in the buddies space's chat page, not the
+// cabinet address it moved from (which still redirects, for links already sent).
+func TestNoticeLinksToBuddiesChats(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		if got := (Kind{}).Notice(42, pending).Path; got != "/buddies/chats?c=42" {
+			t.Errorf("pending=%v: path = %q, want /buddies/chats?c=42", pending, got)
+		}
+	}
+}
+
+func TestReactionNoticeWording(t *testing.T) {
+	for _, c := range []struct{ kind, eventType, company, title, body string }{
+		{ReactionCongrats, "offer", "Stripe", "A buddy reacted to your offer", "A buddy reacted “Congrats” to your offer from Stripe."},
+		{ReactionLuck, "interview", "GitLab", "A buddy reacted to your interview", "A buddy reacted “Good luck” to your interview at GitLab."},
+		{ReactionRooting, "applied", "Revolut", "A buddy reacted to your application", "A buddy reacted “Rooting for you” to your application to Revolut."},
+		// An event recorded with no company says so by naming none, not with a dangling "from".
+		{ReactionSame, "offer", "", "A buddy reacted to your offer", "A buddy reacted “Same boat” to your offer."},
+		{ReactionInsight, "applied", "", "A buddy reacted to your application", "A buddy reacted “Insightful” to your application."},
+	} {
+		title, body := reactionNotice(c.kind, c.eventType, c.company)
+		if title != c.title || body != c.body {
+			t.Errorf("%s/%s/%q = %q / %q, want %q / %q", c.kind, c.eventType, c.company, title, body, c.title, c.body)
+		}
+	}
+}

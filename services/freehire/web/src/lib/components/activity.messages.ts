@@ -1,0 +1,142 @@
+import { defineMessages } from '#lib/i18n/t.js';
+
+// Shared copy for Activity's saved, viewed and hidden jobs, plus the legacy analyses route.
+export const messages = defineMessages(
+  {
+    // The layout's base title; each child page overrides it with its own.
+    headTitle: 'Activity — freehire',
+    title: 'Activity',
+    tablistLabel: 'Activity view',
+    tabs: {
+      saved: 'Saved',
+      history: 'Viewed',
+      hidden: 'Hidden',
+      autoApply: 'Auto-apply',
+    },
+    headTitles: {
+      saved: 'Saved — Activity — freehire',
+      history: 'Viewed — Activity — freehire',
+      matches: 'Matches — Activity — freehire',
+      hidden: 'Hidden — Activity — freehire',
+      autoApply: 'Auto-apply — Activity — freehire',
+    },
+    autoApply: {
+      description: 'All current automatic applications and submissions from the last 30 days.',
+      loadError: "Couldn't load your automatic applications.",
+      empty: 'No automatic applications yet. Start one from a job page.',
+      refresh: 'Refresh',
+      retry: 'Try again',
+      unknownCompany: 'Unknown company',
+      statuses: {
+        tailoring: 'Preparing application',
+        pending_review: 'Needs your review',
+        approved: 'Approved · awaiting submission',
+        blocked: 'Needs attention',
+        declined: 'Declined',
+        failed: 'Submission failed',
+        tailor_failed: 'CV preparation failed',
+        submitted: 'Submitted',
+      },
+      details: {
+        tailoring: 'Your CV and application answers are being prepared.',
+        pending_review: 'Review your CV and answers before approving submission.',
+        approved: 'You approved this application. It has not been submitted yet.',
+        blocked: 'Open the application to see what stopped it and what to do next.',
+        declined: 'You declined this application. It will not be submitted.',
+        failed: 'Open the application to check the outcome and available next steps.',
+        tailor_failed: 'CV preparation stopped. Open the application to try again.',
+        submitted: 'The application was submitted to the employer.',
+      },
+    },
+    saved: {
+      loadError: "Couldn't load your saved jobs.",
+      empty: 'Nothing saved yet. Jobs you save will show up here.',
+    },
+    history: {
+      loadError: "Couldn't load your viewed jobs.",
+      empty: 'Nothing viewed yet. Jobs you open will show up here.',
+    },
+    matches: {
+      loadError: "Couldn't load your analyses.",
+      empty: 'No AI match analyses yet. Open a job and run “Analyse match with AI”.',
+      closed: 'Closed',
+      stale: 'Stale',
+      unknownCompany: 'Unknown company',
+    },
+    hidden: {
+      loadError: "Couldn't load your hidden jobs.",
+      empty: 'Nothing hidden. Jobs you hide from the feed show up here.',
+      unhide: 'Un-hide',
+      unhideTitle: 'Un-hide — show this job in the feed again',
+    },
+  },
+  {
+    ru: {
+      headTitle: 'Активность — freehire',
+      title: 'Активность',
+      tablistLabel: 'Раздел активности',
+      tabs: {
+        saved: 'Сохранённые',
+        history: 'Просмотренные',
+        hidden: 'Скрытые',
+        autoApply: 'Автоподача',
+      },
+      headTitles: {
+        saved: 'Сохранённые — Активность — freehire',
+        history: 'Просмотренные — Активность — freehire',
+        matches: 'Совпадения — Активность — freehire',
+        hidden: 'Скрытые — Активность — freehire',
+        autoApply: 'Автоподача — Активность — freehire',
+      },
+      autoApply: {
+        description: 'Все текущие автоподачи и отправленные заявки за последние 30 дней.',
+        loadError: 'Не удалось загрузить ваши автоподачи.',
+        empty: 'Автоподач пока нет. Запустите первую на странице вакансии.',
+        refresh: 'Обновить',
+        retry: 'Попробовать снова',
+        unknownCompany: 'Компания неизвестна',
+        statuses: {
+          tailoring: 'Подготовка заявки',
+          pending_review: 'Ждёт вашей проверки',
+          approved: 'Подтверждена · ждёт отправки',
+          blocked: 'Нужно ваше внимание',
+          declined: 'Отклонена',
+          failed: 'Ошибка отправки',
+          tailor_failed: 'Ошибка подготовки резюме',
+          submitted: 'Отправлена',
+        },
+        details: {
+          tailoring: 'Готовим резюме и ответы на вопросы работодателя.',
+          pending_review: 'Проверьте резюме и ответы, затем подтвердите отправку.',
+          approved: 'Вы подтвердили заявку. Она ещё не отправлена.',
+          blocked: 'Откройте заявку, чтобы узнать причину остановки и следующие шаги.',
+          declined: 'Вы отклонили эту заявку. Она не будет отправлена.',
+          failed: 'Откройте заявку, чтобы проверить результат и доступные действия.',
+          tailor_failed: 'Подготовка резюме остановилась. Откройте заявку, чтобы повторить.',
+          submitted: 'Заявка отправлена работодателю.',
+        },
+      },
+      saved: {
+        loadError: 'Не удалось загрузить сохранённые вакансии.',
+        empty: 'Пока пусто. Сохранённые вакансии появятся здесь.',
+      },
+      history: {
+        loadError: 'Не удалось загрузить историю.',
+        empty: 'Пока пусто. Вакансии, которые вы открывали, появятся здесь.',
+      },
+      matches: {
+        loadError: 'Не удалось загрузить ваши анализы.',
+        empty: 'Анализов пока нет. Откройте вакансию и запустите «Анализ соответствия с AI».',
+        closed: 'Закрыта',
+        stale: 'Устарел',
+        unknownCompany: 'Компания неизвестна',
+      },
+      hidden: {
+        loadError: 'Не удалось загрузить скрытые вакансии.',
+        empty: 'Скрытых нет. Вакансии, которые вы скроете из ленты, появятся здесь.',
+        unhide: 'Вернуть',
+        unhideTitle: 'Вернуть — снова показывать эту вакансию в ленте',
+      },
+    },
+  },
+);

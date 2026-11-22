@@ -1,0 +1,263 @@
+// The signed-in user's single profile — one specialization + skills set. Read once from
+// GET /api/v1/me/profile (null when the user has none yet); save (PUT) and clear (DELETE)
+// call the API and keep the local copy in sync so the view updates without a reload.
+//
+// SSR-safe and auth-agnostic (see UserResource): the load is a browser-only no-op and
+// the profile stays null for signed-out users. Mutations surface API errors to the
+// caller (a bad specialization or an over-cap set is a 400) so the UI can show them.
+
+import { api } from '#lib/api.js';
+import {
+  withSkill,
+  withSkills,
+  withoutSkill,
+  withAvoidedSkill,
+  withoutAvoidedSkill,
+  type ProfileSkillSets,
+} from '#lib/profileSkills.js';
+import { withExcluded, withoutExcluded } from '#lib/profileExclusions.js';
+import { capSpecializations } from '#lib/profileLimits.js';
+import { serialQueue } from '#lib/serialQueue.js';
+import { UserResource } from '#lib/userResource.svelte.js';
+import type { LocationPreferences, UserProfile } from '#lib/types.js';
+
+class ProfileStore extends UserResource<UserProfile | null> {
+  // Reassigned (never mutated in place) on every change, so $state.raw is enough and
+  // readers ($derived in the view) re-run on each new value. The base's `loaded` is
+  // reactive too, so the filter modal can wait for the load to settle before showing
+  // its "Apply my profile" action.
+  #profile = $state.raw<UserProfile | null>(null);
+  #reads = $state(0);
+
+  // Single-skill edits go one at a time: the endpoint replaces the whole row, so two
+  // claims made a moment apart would otherwise both be assembled from the same
+  // pre-claim skill list and the second would drop the first.
+  #queue = serialQueue();
+
+  get profile(): UserProfile | null {
+    return this.#profile;
+  }
+
+  /** Counts the profile reads from the server (the first load and every refresh), but not
+   *  this tab's own writes. A form that seeds its edit state once keys on this to reseed
+   *  when the profile changed elsewhere, without remounting under its own autosave. */
+  get reads(): number {
+    return this.#reads;
+  }
+
+  protected load(): Promise<UserProfile | null> {
+    return api.getProfile();
+  }
+
+  protected apply(row: UserProfile | null) {
+    this.#profile = row;
+    this.#reads++;
+  }
+
+  protected clearState() {
+    this.#profile = null;
+  }
+
+  /** Create-or-replace the profile. `seniorities` are the desired experience levels (may be
+   *  empty). `excludedSkills`/`excludedSources`/`excludedCompanies` are what to avoid (each
+   *  may be empty). `location` is the optional location-preferences block (null clears it).
+   *  Empty role and skill lists are allowed while filling in the profile. Throws
+   *  on a bad specialization, an unknown seniority, an over-cap
+   *  excluded set, or an out-of-vocabulary location value (the caller shows the error). */
+  async save(
+    specializations: string[],
+    skills: string[],
+    seniorities: string[],
+    excludedSkills: string[],
+    excludedSources: string[],
+    excludedCompanies: string[],
+    location: LocationPreferences | null,
+    jobLanguages: string[] = this.#profile?.job_languages ?? [],
+  ): Promise<UserProfile> {
+    const row = await api.saveProfile(
+      specializations,
+      skills,
+      seniorities,
+      excludedSkills,
+      excludedSources,
+      excludedCompanies,
+      location,
+      jobLanguages,
+    );
+    this.#profile = row;
+    this.markLoaded();
+    return row;
+  }
+
+  /** Add one skill to the profile — what the job-match block writes when the viewer says
+   *  they have a skill it listed as missing. Also stops excluding that skill. Rejects when
+   *  there is no profile to add to (the block only offers this to a profiled viewer) or
+   *  when the write is refused, leaving the stored copy untouched either way. */
+  addSkill(skill: string): Promise<UserProfile> {
+    return this.#queue(() => this.#writeSkills((sets) => withSkill(sets, skill)));
+  }
+
+  /** Merge a CV's skills and roles into the latest profile inside the write queue.
+   *  Manual edits queued before the import survive, and both the cap and the reported
+   *  additions are computed from the same snapshot that is actually saved. */
+  mergeResumeExtraction(
+    newSkills: string[],
+    newSpecializations: string[],
+  ): Promise<{
+    addedSkills: number;
+    addedSpecializations: number;
+    droppedSpecializations: number;
+  }> {
+    return this.#queue(async () => {
+      const current = this.#profile;
+      if (!current) throw new Error('No profile to edit.');
+      const sets = withSkills(current, newSkills);
+      const { kept, dropped } = capSpecializations(current.specializations, newSpecializations);
+      const addedSkills = sets.skills.length - current.skills.length;
+      const addedSpecializations = kept.length - current.specializations.length;
+      if (addedSkills > 0 || addedSpecializations > 0) {
+        await this.#saveFrom(current, {
+          specializations: kept,
+          skills: sets.skills,
+          excluded_skills: sets.excluded_skills,
+        });
+      }
+      return { addedSkills, addedSpecializations, droppedSpecializations: dropped };
+    });
+  }
+
+  /** Take one skill back out — undoing a claim. Subtracts only that skill, so a claim made
+   *  after it survives. */
+  removeSkill(skill: string): Promise<UserProfile> {
+    return this.#queue(() => this.#writeSkills((sets) => withoutSkill(sets, skill)));
+  }
+
+  /** Record a skill as one to avoid — the match block's other answer to a missing skill. Also
+   *  drops it from the held skills, so the profile never claims and avoids the same token. */
+  avoidSkill(skill: string): Promise<UserProfile> {
+    return this.#queue(() => this.#writeSkills((sets) => withAvoidedSkill(sets, skill)));
+  }
+
+  /** Stop avoiding a skill. Lifts the exclusion only — it does not claim the skill. */
+  unavoidSkill(skill: string): Promise<UserProfile> {
+    return this.#queue(() => this.#writeSkills((sets) => withoutAvoidedSkill(sets, skill)));
+  }
+
+  /** Record a source (a `jobs.source` value) as one to avoid. Unlike skills, there is no
+   *  "wanted sources" list to reconcile against — this only ever adds to the one list. */
+  avoidSource(source: string): Promise<UserProfile> {
+    return this.#queue(() => this.#writeExcludedSources((sources) => withExcluded(sources, source)));
+  }
+
+  /** Stop avoiding a source. */
+  unavoidSource(source: string): Promise<UserProfile> {
+    return this.#queue(() => this.#writeExcludedSources((sources) => withoutExcluded(sources, source)));
+  }
+
+  /** Record a company (by slug) as one to avoid. */
+  avoidCompany(company: string): Promise<UserProfile> {
+    return this.#queue(() => this.#writeExcludedCompanies((companies) => withExcluded(companies, company)));
+  }
+
+  /** Stop avoiding a company. */
+  unavoidCompany(company: string): Promise<UserProfile> {
+    return this.#queue(() => this.#writeExcludedCompanies((companies) => withoutExcluded(companies, company)));
+  }
+
+  /** Re-save the profile with an edited specializations list — what the Roles card
+   *  writes when you add or remove one. Rejects when there is no profile. */
+  updateSpecializations(specializations: string[]): Promise<UserProfile> {
+    return this.#queue(() => {
+      const current = this.#profile;
+      if (!current) return Promise.reject(new Error('No profile to edit.'));
+      return this.#saveFrom(current, { specializations });
+    });
+  }
+
+  /** Re-save the profile with an edited seniority list — what the Roles card's Level row
+   *  writes when you add or remove one. Rejects when there is no profile. */
+  updateSeniorities(seniorities: string[]): Promise<UserProfile> {
+    return this.#queue(() => {
+      const current = this.#profile;
+      if (!current) return Promise.reject(new Error('No profile to edit.'));
+      return this.#saveFrom(current, { seniorities });
+    });
+  }
+
+  /** Save preferred posting languages through the same queue as other profile edits. */
+  updateJobLanguages(jobLanguages: string[]): Promise<UserProfile> {
+    return this.#queue(() => {
+      const current = this.#profile;
+      if (!current) return Promise.reject(new Error('No profile to edit.'));
+      return this.#saveFrom(current, { job_languages: jobLanguages });
+    });
+  }
+
+  /** Re-save the profile with an edited location-preferences block — what the Location
+   *  view writes on every change. Rejects when there is no profile. */
+  updateLocation(location: LocationPreferences | null): Promise<UserProfile> {
+    return this.#queue(() => {
+      const current = this.#profile;
+      if (!current) return Promise.reject(new Error('No profile to edit.'));
+      return this.#saveFrom(current, { location_preferences: location });
+    });
+  }
+
+  /** Re-save the profile with edited skill sets. Reads `#profile` at call time — inside the
+   *  queue — so it sees whatever the preceding write applied rather than a copy that
+   *  predates it. */
+  #writeSkills(edit: (sets: ProfileSkillSets) => ProfileSkillSets): Promise<UserProfile> {
+    const current = this.#profile;
+    if (!current) return Promise.reject(new Error('No profile to edit.'));
+    const next = edit(current);
+    return this.#saveFrom(current, { skills: next.skills, excluded_skills: next.excluded_skills });
+  }
+
+  /** Re-save the profile with an edited excluded_sources list. Mirrors `#writeSkills`. */
+  #writeExcludedSources(edit: (sources: string[]) => string[]): Promise<UserProfile> {
+    const current = this.#profile;
+    if (!current) return Promise.reject(new Error('No profile to edit.'));
+    return this.#saveFrom(current, { excluded_sources: edit(current.excluded_sources) });
+  }
+
+  /** Re-save the profile with an edited excluded_companies list. Mirrors `#writeSkills`. */
+  #writeExcludedCompanies(edit: (companies: string[]) => string[]): Promise<UserProfile> {
+    const current = this.#profile;
+    if (!current) return Promise.reject(new Error('No profile to edit.'));
+    return this.#saveFrom(current, { excluded_companies: edit(current.excluded_companies) });
+  }
+
+  /** Re-saves `current` with `overrides` applied field by field — the shared tail every
+   *  write method above ends with, so `save()`'s positional argument list has exactly one
+   *  place that maps it from a profile shape, not one per caller. */
+  #saveFrom(
+    current: UserProfile,
+    overrides: Partial<
+      Pick<
+        UserProfile,
+        | 'specializations'
+        | 'skills'
+        | 'seniorities'
+        | 'excluded_skills'
+        | 'excluded_sources'
+        | 'excluded_companies'
+        | 'location_preferences'
+        | 'job_languages'
+      >
+    >,
+  ): Promise<UserProfile> {
+    const next = { ...current, ...overrides };
+    return this.save(
+      next.specializations,
+      next.skills,
+      next.seniorities,
+      next.excluded_skills,
+      next.excluded_sources,
+      next.excluded_companies,
+      next.location_preferences,
+      next.job_languages ?? [],
+    );
+  }
+}
+
+export const profileStore = new ProfileStore();

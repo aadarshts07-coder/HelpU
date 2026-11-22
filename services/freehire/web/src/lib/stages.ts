@@ -1,0 +1,61 @@
+// The application-stage vocabulary, in pipeline order (active stages then
+// terminal), with its labels and its group membership. All three are generated
+// from internal/userjob via cmd/gen-contracts — this module reads them and adds
+// no vocabulary of its own. It used to hold a second copy of the labels, which is
+// how the board, the funnel and this file came to disagree about what to call a
+// settled application. The English labels ARE the generated ones; the translations
+// beside them live in `stages.messages.ts`, keyed by the same stage and group ids.
+
+import { STAGE_GROUPS, type Stage } from './generated/contracts';
+import { t } from './i18n/t';
+import type { Locale } from './i18n/locale';
+import { messages } from './stages.messages';
+
+interface StageOption {
+  value: string;
+  label: string;
+}
+
+/** One group of stages as the selector renders it: a heading with its options. */
+export interface StageOptionGroup {
+  id: string;
+  label: string;
+  options: StageOption[];
+}
+
+// Every stage must be placed by the emitted groups, and every stage the groups name must be
+// real. Both directions, at compile time: `false extends true` is an error, so a stage added
+// to the Go vocabulary without a group fails `pnpm run check` rather than reaching the board
+// as a card in no column.
+//
+// EXPORTED WITH NO CONSUMER, DELIBERATELY. The declaration is the whole check — evaluating
+// `Assert<Eq<…>>` is what fails — and `export` is what stops the linter deleting it as an
+// unused local. knip reports it as an unused export, correctly and unhelpfully; this is
+// the note that says so.
+type Assert<T extends true> = T;
+type Eq<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type GroupedStage = (typeof STAGE_GROUPS)[number]['stages'][number];
+/** @public */
+export type StagesAreFullyGrouped = Assert<Eq<Stage, GroupedStage>>;
+
+/** A human label for a stage value in `locale` (English — the generated label — by
+ *  default); the value itself, title-cased, when not in the known vocabulary. */
+export function humanizeStage(stage: string, locale: Locale = 'en'): string {
+  return t(messages, locale).stages[stage] ?? stage.charAt(0).toUpperCase() + stage.slice(1);
+}
+
+/** A human label for a stage GROUP id (a board column, a funnel band) in `locale`;
+ *  the id itself when not in the known vocabulary. */
+export function stageGroupLabel(id: string, locale: Locale = 'en'): string {
+  return t(messages, locale).groups[id] ?? id;
+}
+
+/** The stages grouped as the selector shows them, in generated pipeline order, so
+ *  `Closed` reads as a heading over its three outcomes rather than as a fifth state. */
+export function groupedStages(locale: Locale = 'en'): StageOptionGroup[] {
+  return STAGE_GROUPS.map((g) => ({
+    id: g.id,
+    label: stageGroupLabel(g.id, locale),
+    options: g.stages.map((value) => ({ value, label: humanizeStage(value, locale) })),
+  }));
+}

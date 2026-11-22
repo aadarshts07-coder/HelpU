@@ -1,0 +1,516 @@
+//go:build integration
+
+// Integration tests for the candidate-facing auto-apply trigger
+// (openspec/changes/auto-apply-submit-trigger): the enqueue endpoint's eligibility gates,
+// its dedup/decline-is-terminal contract, the event publish, and the job detail response's
+// own auto-apply status overlay.
+// Run with: go test -tags=integration ./internal/api/handler/
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/strelov1/freehire/internal/ai/plan"
+	"github.com/strelov1/freehire/internal/application/jobtracking"
+	"github.com/strelov1/freehire/internal/candidate/resume"
+	"github.com/strelov1/freehire/internal/candidate/resumeextract"
+	"github.com/strelov1/freehire/internal/identity/auth"
+	"github.com/strelov1/freehire/internal/platform/db"
+)
+
+// newAutoApplyEnqueueApp wires GetJob (for the auto_apply_status overlay) and
+// PostJobAutoApply behind the SAME auth gates the real routes use: optionalAuth for the
+// read, cookie-only auth for the write. events (nilable) is the same
+// autoApplyEventPublisher fake auto_apply_review_publish_integration_test.go already
+// defines.
+func newAutoApplyEnqueueApp(pool *pgxpool.Pool, iss *auth.Issuer, events autoApplyEventPublisher) (*fiber.App, *assistantHandlers) {
+	queries := db.New(pool)
+	_, h, _ := newAutoApplyTailorAppFull(pool, iss, &turnModel{}, plan.DefaultConfig(), "")
+	h.events = events
+	// Production always wires the résumé store (newCVHandlers); without it the résumé-only
+	// path below would be untestable. Storage disabled: the seed reads Postgres alone.
+	h.cv.resume = resume.New(nil, resume.NewQueriesRepository(queries))
+
+	app := fiber.New(fiber.Config{ErrorHandler: RenderError})
+	api := app.Group("/api/v1")
+	optionalAuth := auth.OptionalAuth(iss, testVersions, apiKeys{queries})
+	cookieAuth := auth.RequireAuth(iss, testVersions)
+	mountJobsContract(app, &jobsHandlers{queries: queries}, middleware{optional: optionalAuth})
+	api.Post("/jobs/:slug/auto-apply", cookieAuth, newContract(contractHandlers{assistantHandlers: h}))
+	return app, h
+}
+
+func truncateAutoApplyEnqueueTables(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		"TRUNCATE auto_apply_queue, cvs, users, jobs RESTART IDENTITY CASCADE"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+}
+
+// seedEnqueueJob inserts a job with the given source and slug — insertAutoApplyJob (same
+// package) always hardcodes greenhouse, which most of these tests want, but the
+// non-Greenhouse refusal test needs another source.
+func seedEnqueueJob(t *testing.T, pool *pgxpool.Pool, source, slug string) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO jobs (source, external_id, url, title, company, public_slug)
+		 VALUES ($1, $2, 'https://example.test/j/'||$2, 'Go Developer', 'Acme', $2)
+		 RETURNING id`, source, slug).Scan(&id); err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+	return id
+}
+
+// endPro takes an account off the pro plan, leaving it free.
+func endPro(t *testing.T, pool *pgxpool.Pool, userID int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `UPDATE users SET pro_until_granted = NULL WHERE id = $1`, userID); err != nil {
+		t.Fatalf("end pro: %v", err)
+	}
+}
+
+// makePro puts an account on the pro plan. It writes pro_until_granted, not pro_until: since
+// migration 0135 the plan column is derived from three sources and assigning it fails.
+//
+// Granted is the right source rather than a convenient one — this test is about what a plan
+// ALLOWS, and no payment provider is involved in it.
+func makePro(t *testing.T, pool *pgxpool.Pool, userID int64) {
+	t.Helper()
+	q := db.New(pool)
+	if err := q.SetProUntilGranted(context.Background(), db.SetProUntilGrantedParams{
+		ID: userID, Until: pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
+	}); err != nil {
+		t.Fatalf("make pro: %v", err)
+	}
+}
+
+func enqueueRequest(t *testing.T, app *fiber.App, slug, cookie string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/jobs/"+slug+"/auto-apply", nil)
+	if cookie != "" {
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	}
+	resp, err := app.Test(req, 10_000)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	return resp
+}
+
+func getJobRequest(t *testing.T, app *fiber.App, slug, cookie string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/jobs/"+slug, nil)
+	if cookie != "" {
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	}
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	return resp
+}
+
+func TestPostJobAutoApply_RefusesAnUnsupportedSource(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "nongh@example.test")
+	makePro(t, pool, userID)
+	insertBaseCV(t, pool, userID)
+	seedEnqueueJob(t, pool, "smartrecruiters", "nongh-job")
+
+	resp := enqueueRequest(t, app, "nongh-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a source auto-apply cannot queue against", resp.StatusCode)
+	}
+}
+
+// TestPostJobAutoApply_AcceptsEveryQueueableSource covers every ATS auto-apply can queue an
+// attempt against today — Greenhouse is the only one that can currently SUBMIT (fillProviders
+// in internal/api/atsapply), but Ashby/Workable/Lever/Recruitee attempts still tailor and
+// review, then park honestly (see auto_apply_tailor_integration_test.go's own park-reason
+// coverage) rather than being refused at the door.
+func TestPostJobAutoApply_AcceptsEveryQueueableSource(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	for _, source := range []string{"greenhouse", "ashby", "workable", "lever", "recruitee"} {
+		t.Run(source, func(t *testing.T) {
+			userID, cookie := autoApplyTailorUser(t, pool, iss, source+"@example.test")
+			makePro(t, pool, userID)
+			insertBaseCV(t, pool, userID)
+			seedEnqueueJob(t, pool, source, source+"-job")
+
+			resp := enqueueRequest(t, app, source+"-job", cookie)
+			defer resp.Body.Close()
+			if resp.StatusCode != fiber.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want 200 queued for source %q: %s", resp.StatusCode, source, body)
+			}
+		})
+	}
+}
+
+func TestPostJobAutoApply_RefusesNonProCaller(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "free@example.test")
+	endPro(t, pool, userID) // the fixture subscribes everyone; this caller must be free
+	insertBaseCV(t, pool, userID)
+	seedEnqueueJob(t, pool, "greenhouse", "free-job")
+
+	resp := enqueueRequest(t, app, "free-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402 for a free-tier caller", resp.StatusCode)
+	}
+}
+
+func TestPostJobAutoApply_RefusesNoBaseCV(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "nocv@example.test")
+	makePro(t, pool, userID)
+	seedEnqueueJob(t, pool, "greenhouse", "nocv-job")
+
+	resp := enqueueRequest(t, app, "nocv-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusConflict {
+		t.Fatalf("status = %d, want 409 for no base CV", resp.StatusCode)
+	}
+}
+
+// seedStructuredResume gives the caller what a Profile-page upload leaves behind — a parsed
+// résumé on the users row — and no cvs row. Both stamps share one now(), so it reads as
+// current.
+func seedStructuredResume(t *testing.T, pool *pgxpool.Pool, userID int64) {
+	t.Helper()
+	blob, _ := json.Marshal(resumeextract.Structured{FullName: "Ada Lovelace", Headline: "Backend Engineer"})
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE users SET resume_structured = $2, resume_structured_uploaded_at = now(), resume_uploaded_at = now() WHERE id = $1`,
+		userID, blob); err != nil {
+		t.Fatalf("seed structured résumé: %v", err)
+	}
+}
+
+// An uploaded résumé is enough: the tailoring step seeds the base CV from it, so requiring
+// the cvs row up front refused a candidate who had never opened the CV builder.
+func TestPostJobAutoApply_QueuesWithOnlyAnUploadedResume(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "resumeonly@example.test")
+	seedStructuredResume(t, pool, userID)
+	seedEnqueueJob(t, pool, "greenhouse", "resumeonly-job")
+
+	resp := enqueueRequest(t, app, "resumeonly-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200 queued for a caller with an uploaded résumé: %s", resp.StatusCode, body)
+	}
+}
+
+// A free caller with an uploaded résumé must hear about their plan, not be told to add the
+// résumé they already have — the résumé gate sits ahead of the allowance.
+func TestPostJobAutoApply_FreeCallerWithOnlyAResumeIsToldTheirPlan(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "freeresume@example.test")
+	endPro(t, pool, userID)
+	seedStructuredResume(t, pool, userID)
+	seedEnqueueJob(t, pool, "greenhouse", "freeresume-job")
+
+	resp := enqueueRequest(t, app, "freeresume-job", cookie)
+	defer resp.Body.Close()
+	var body struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != fiber.StatusPaymentRequired {
+		t.Fatalf("status = %d (%q), want 402 for a free caller with a résumé", resp.StatusCode, body.Error)
+	}
+	if want := "Your plan doesn't include automatic applications."; body.Error != want {
+		t.Errorf("error = %q, want %q", body.Error, want)
+	}
+}
+
+func TestPostJobAutoApply_RejectsAPIKeyOnly(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, _ := autoApplyTailorUser(t, pool, iss, "keyonly@example.test")
+	makePro(t, pool, userID)
+	insertBaseCV(t, pool, userID)
+	seedEnqueueJob(t, pool, "greenhouse", "keyonly-job")
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/jobs/keyonly-job/auto-apply", nil)
+	req.Header.Set("Authorization", "Bearer fhk_whatever")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 — this route is cookie-only", resp.StatusCode)
+	}
+}
+
+func TestPostJobAutoApply_FreshRequestCreatesOneEntryAndPublishes(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	events := &fakeEventPublisher{}
+	app, _ := newAutoApplyEnqueueApp(pool, iss, events)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "fresh@example.test")
+	makePro(t, pool, userID)
+	insertBaseCV(t, pool, userID)
+	seedEnqueueJob(t, pool, "greenhouse", "fresh-job")
+
+	resp := enqueueRequest(t, app, "fresh-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM auto_apply_queue WHERE user_id = $1", userID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("auto_apply_queue rows = %d, want 1", count)
+	}
+	waitForPublishCalls(t, events, 1)
+}
+
+// TestPostJobAutoApply_PutsTheJobOnTheTrackerBoard covers openspec/changes/
+// auto-apply-review-tracking: triggering auto-apply for a job the candidate has never
+// tracked must make it appear on the board (stage `preparing`) immediately, not only once
+// an attempt happens to succeed — today the queue is otherwise entirely invisible there.
+func TestPostJobAutoApply_PutsTheJobOnTheTrackerBoard(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "board@example.test")
+	makePro(t, pool, userID)
+	insertBaseCV(t, pool, userID)
+	job := seedEnqueueJob(t, pool, "greenhouse", "board-job")
+
+	resp := enqueueRequest(t, app, "board-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var stage pgtype.Text
+	if err := pool.QueryRow(context.Background(),
+		"SELECT stage FROM applications WHERE user_id = $1 AND job_id = $2", userID, job).Scan(&stage); err != nil {
+		t.Fatalf("read application stage: %v", err)
+	}
+	if !stage.Valid || stage.String != "preparing" {
+		t.Errorf("stage = %+v, want preparing", stage)
+	}
+}
+
+// TestPostJobAutoApply_DoesNotMoveAJobAlreadyOnTheBoard covers the other half of the same
+// requirement: a job the candidate already progressed (say, to `interview`) must not be
+// silently reset to `preparing` just because they also started an auto-apply attempt for it.
+func TestPostJobAutoApply_DoesNotMoveAJobAlreadyOnTheBoard(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "already-board@example.test")
+	makePro(t, pool, userID)
+	insertBaseCV(t, pool, userID)
+	job := seedEnqueueJob(t, pool, "greenhouse", "already-board-job")
+
+	tracking := jobtracking.New(jobtracking.NewQueriesRepository(db.New(pool), pool))
+	stage := "interview"
+	if _, err := tracking.Track(context.Background(), userID, "already-board-job", &stage, nil, "user"); err != nil {
+		t.Fatalf("pre-track: %v", err)
+	}
+
+	resp := enqueueRequest(t, app, "already-board-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var got pgtype.Text
+	if err := pool.QueryRow(context.Background(),
+		"SELECT stage FROM applications WHERE user_id = $1 AND job_id = $2", userID, job).Scan(&got); err != nil {
+		t.Fatalf("read application stage: %v", err)
+	}
+	if !got.Valid || got.String != "interview" {
+		t.Errorf("stage = %+v, want interview to survive unchanged", got)
+	}
+}
+
+func TestPostJobAutoApply_RepeatRequestIsIdempotentAndDoesNotRepublish(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	events := &fakeEventPublisher{}
+	app, _ := newAutoApplyEnqueueApp(pool, iss, events)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "repeat@example.test")
+	makePro(t, pool, userID)
+	insertBaseCV(t, pool, userID)
+	seedEnqueueJob(t, pool, "greenhouse", "repeat-job")
+
+	first := enqueueRequest(t, app, "repeat-job", cookie)
+	defer first.Body.Close()
+	if first.StatusCode != fiber.StatusOK {
+		t.Fatalf("first status = %d, want 200", first.StatusCode)
+	}
+	second := enqueueRequest(t, app, "repeat-job", cookie)
+	defer second.Body.Close()
+	if second.StatusCode != fiber.StatusOK {
+		t.Fatalf("second status = %d, want 200 (idempotent)", second.StatusCode)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM auto_apply_queue WHERE user_id = $1", userID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("auto_apply_queue rows = %d, want 1 (no duplicate)", count)
+	}
+	waitForPublishCalls(t, events, 1)
+}
+
+func TestPostJobAutoApply_PublishFailureDoesNotChangeTheResponse(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	events := &fakeEventPublisher{err: errors.New("inngest event api unreachable")}
+	app, _ := newAutoApplyEnqueueApp(pool, iss, events)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "publishfail@example.test")
+	makePro(t, pool, userID)
+	insertBaseCV(t, pool, userID)
+	seedEnqueueJob(t, pool, "greenhouse", "publishfail-job")
+
+	resp := enqueueRequest(t, app, "publishfail-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200 — a publish failure must not surface as a request failure", resp.StatusCode)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM auto_apply_queue WHERE user_id = $1", userID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("auto_apply_queue rows = %d, want 1 — the row is committed regardless of the publish outcome", count)
+	}
+}
+
+func TestPostJobAutoApply_DeclinedEntryIsRefusedPermanently(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "declined@example.test")
+	makePro(t, pool, userID)
+	insertBaseCV(t, pool, userID)
+	jobID := seedEnqueueJob(t, pool, "greenhouse", "declined-job")
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO auto_apply_queue (user_id, job_id, review_decision, reviewed_at, blocked_at, last_error)
+		 VALUES ($1, $2, 'declined', now(), now(), 'candidate declined the tailored CV')`,
+		userID, jobID); err != nil {
+		t.Fatalf("seed declined entry: %v", err)
+	}
+
+	resp := enqueueRequest(t, app, "declined-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusConflict {
+		t.Fatalf("status = %d, want 409 — a declined attempt must never be retried", resp.StatusCode)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM auto_apply_queue WHERE user_id = $1", userID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("auto_apply_queue rows = %d, want 1 (no second row)", count)
+	}
+}
+
+// TestPostJobAutoApply_RefusesAlreadyApplied guards the duplicate-submission risk a code
+// review found: cmd/auto-apply/store.go's Submit deletes the auto_apply_queue row in the
+// same transaction it stamps user_jobs.applied_at, so once a real ATS submission
+// completes, EnqueueAutoApply's own ON CONFLICT dedup sees no row to conflict with — a
+// re-click would otherwise start a second, genuine application for the same job.
+func TestPostJobAutoApply_RefusesAlreadyApplied(t *testing.T) {
+	pool := startPostgres(t)
+	truncateAutoApplyEnqueueTables(t, pool)
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	app, _ := newAutoApplyEnqueueApp(pool, iss, nil)
+
+	userID, cookie := autoApplyTailorUser(t, pool, iss, "applied@example.test")
+	makePro(t, pool, userID)
+	insertBaseCV(t, pool, userID)
+	jobID := seedEnqueueJob(t, pool, "greenhouse", "applied-job")
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO applications (user_id, job_id, applied_at) VALUES ($1, $2, now())`,
+		userID, jobID); err != nil {
+		t.Fatalf("seed applications row: %v", err)
+	}
+
+	resp := enqueueRequest(t, app, "applied-job", cookie)
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusConflict {
+		t.Fatalf("status = %d, want 409 — already applied for real", resp.StatusCode)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM auto_apply_queue WHERE user_id = $1", userID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("auto_apply_queue rows = %d, want 0 — no new attempt after a real application", count)
+	}
+}

@@ -1,0 +1,349 @@
+// Package cv is the CV-builder domain: the structured CV Document, its sanitizer,
+// seeding from the extracted résumé, and PDF rendering behind a Renderer interface.
+package cv
+
+import (
+	"math"
+
+	"github.com/strelov1/freehire/internal/candidate/perioddate"
+	"github.com/strelov1/freehire/internal/platform/llm"
+)
+
+// This file holds ONLY the wire shape (Document + section types) and the sanitizer, so
+// cmd/gen-contracts can generate the TypeScript type without the server-only Renderer/Store.
+
+// Field bounds for untrusted CV content. The Document is user-editable and fed to an LLM, so
+// Sanitize is both the persistence guard and the prompt-injection guard.
+const (
+	maxNameRunes     = 120
+	maxLocationRunes = 160
+	maxEmailRunes    = 200
+	maxPhoneRunes    = 60
+	maxSummaryRunes  = 2000
+	maxBulletRunes   = 600
+	maxShortRunes    = 200 // role, company, degree, field, dates, language name/level, links, names
+
+	// The section ceilings Sanitize truncates to, exported (and generated into the web
+	// contracts) so the editor can refuse an Add past them instead of dropping a row silently.
+	MaxExperience     = 30
+	MaxEducation      = 20
+	MaxSkillGroups    = 20
+	maxSkillItems     = 60
+	MaxLanguages      = 20
+	MaxProjects       = 30
+	MaxCertifications = 30
+	maxLinks          = 20
+
+	// DefaultMaxBullets is the per-experience / per-project bullet ceiling when CV_MAX_BULLETS
+	// is unset. Writers must refuse growth past MaxBullets rather than let Sanitize drop it.
+	DefaultMaxBullets = 20
+)
+
+// MaxBullets is the hard ceiling on bullets per experience (and per project); Sanitize keeps
+// the first MaxBullets. Mutable via CV_MAX_BULLETS; SetMaxBullets is the only writer.
+var MaxBullets = DefaultMaxBullets
+
+// SetMaxBullets sets the per-role bullet ceiling. Values below 1 fall back to
+// DefaultMaxBullets — a typo must not erase the ceiling.
+func SetMaxBullets(n int) {
+	if n < 1 {
+		n = DefaultMaxBullets
+	}
+	MaxBullets = n
+}
+
+// Page margins are in inches. Sanitize clamps each side to this band and defaults an unset
+// (zero) side to defaultMargin.
+const (
+	defaultMargin = 0.5
+	minMargin     = 0.25
+	maxMargin     = 1.5
+)
+
+// Typography bounds. Unlike the margin band above, these clamp only a value the candidate
+// has actually set: see Style for why zero is not a value here.
+const (
+	minFontSize   = 8.5 // below this the text stops being comfortably readable in print
+	maxFontSize   = 12.0
+	fontSizeStep  = 0.5 // a set size is rounded to the nearest multiple
+	minLineHeight = 0.3
+	maxLineHeight = 0.9
+)
+
+// Document is the typed, sanitized CV. Every field is optional; sections the user has
+// not filled in are left empty rather than invented, and Sanitize drops empty entries.
+type Document struct {
+	Margins Margins `json:"margins"`
+	// No omitempty: it does nothing on a struct, so the tag would only make the generated
+	// TypeScript optional.
+	Style          Style            `json:"style"`
+	Header         Header           `json:"header"`
+	Summary        string           `json:"summary,omitempty"`
+	Experience     []ExperienceItem `json:"experience,omitempty"`
+	Education      []EducationItem  `json:"education,omitempty"`
+	Skills         []SkillGroup     `json:"skills,omitempty"`
+	Languages      []Language       `json:"languages,omitempty"`
+	Projects       []Project        `json:"projects,omitempty"`
+	Certifications []Certification  `json:"certifications,omitempty"`
+}
+
+// Margins is the CV's per-side page margin in inches, applied identically to the HTML
+// preview and the Typst PDF. Sanitize clamps each side and defaults an unset side.
+type Margins struct {
+	Top    float64 `json:"top"`
+	Right  float64 `json:"right"`
+	Bottom float64 `json:"bottom"`
+	Left   float64 `json:"left"`
+}
+
+// Style is the CV's typography: the typeface, the base type size in points, and the line
+// height as a leading multiple of the em. It is part of the document, so it persists, is
+// copied when the CV is tailored, and is not clobbered by field-level patches.
+//
+// A zero value means "whatever the active template uses" and Sanitize KEEPS IT ZERO, unlike
+// Margins. Resolving defaults here would bake the current template's typography into every
+// document on its next save and stop a template switch from changing leading.
+//
+// FontFamily is a registry id (see fonts.go), never a renderer's face name; the renderer
+// resolves it on its own copy at render time.
+type Style struct {
+	FontFamily string  `json:"font_family,omitempty"`
+	FontSize   float64 `json:"font_size,omitempty"`   // points
+	LineHeight float64 `json:"line_height,omitempty"` // em of leading
+}
+
+// sanitized returns the style with each SET value clamped to its band, and every unset
+// (zero) value left unset.
+func (s Style) sanitized() Style {
+	// A face we cannot render is dropped, not refused: Sanitize repairs rather than fails, like
+	// a clamped margin.
+	if !knownFontID(s.FontFamily) {
+		s.FontFamily = ""
+	}
+	if s.FontSize != 0 {
+		s.FontSize = clampFloat(math.Round(s.FontSize/fontSizeStep)*fontSizeStep, minFontSize, maxFontSize)
+	}
+	if s.LineHeight != 0 {
+		s.LineHeight = clampFloat(s.LineHeight, minLineHeight, maxLineHeight)
+	}
+	return s
+}
+
+func clampFloat(v, lo, hi float64) float64 {
+	return math.Min(hi, math.Max(lo, v))
+}
+
+// DefaultMargins is the half-inch-per-side margin a fresh CV starts with.
+func DefaultMargins() Margins {
+	return Margins{Top: defaultMargin, Right: defaultMargin, Bottom: defaultMargin, Left: defaultMargin}
+}
+
+// sanitized returns the margins with every side clamped to [minMargin, maxMargin] and a
+// zero (unset) side defaulted to defaultMargin.
+func (m Margins) sanitized() Margins {
+	return Margins{
+		Top:    clampMargin(m.Top),
+		Right:  clampMargin(m.Right),
+		Bottom: clampMargin(m.Bottom),
+		Left:   clampMargin(m.Left),
+	}
+}
+
+func clampMargin(v float64) float64 {
+	switch {
+	case v == 0:
+		return defaultMargin
+	case v < minMargin:
+		return minMargin
+	case v > maxMargin:
+		return maxMargin
+	default:
+		return v
+	}
+}
+
+// Header is the top-of-CV contact block. The tagline under the name is Document.Summary
+// (there is no separate headline field — one "summary" term across the CV).
+type Header struct {
+	FullName string   `json:"full_name,omitempty"`
+	Email    string   `json:"email,omitempty"`
+	Phone    string   `json:"phone,omitempty"`
+	Location string   `json:"location,omitempty"`
+	Links    []string `json:"links,omitempty"`
+}
+
+// withoutContacts returns a copy of the document carrying only the parts of the header a
+// model may see. Location stays (a tailoring agent reasons about it); a name, address,
+// number and personal profile URL all name the candidate and go.
+//
+// It REBUILDS the header from what is allowed through rather than clearing known identifiers,
+// so a field added to Header is withheld until someone decides otherwise (a blacklist would
+// disclose it by default; see resumeextract structured.go). The receiver is a value, so the
+// stored document is untouched.
+func (d Document) withoutContacts() Document {
+	d.Header = Header{Location: d.Header.Location}
+	return d
+}
+
+// Experience is one work-history entry. Start/End are a structured perioddate.PeriodDate
+// (year, optional month), formatted to display text at render time (see renderer.go).
+type ExperienceItem struct {
+	Role     string                 `json:"role,omitempty"`
+	Company  string                 `json:"company,omitempty"`
+	Location string                 `json:"location,omitempty"`
+	Start    *perioddate.PeriodDate `json:"start,omitempty"`
+	End      *perioddate.PeriodDate `json:"end,omitempty"`
+	Current  bool                   `json:"current,omitempty"`
+	// Summary is the one-line company/role context printed under the role header, before
+	// the bullets. Stack is the per-role technology line printed after the bullets.
+	Summary string   `json:"summary,omitempty"`
+	Bullets []string `json:"bullets,omitempty"`
+	Stack   []string `json:"stack,omitempty"`
+}
+
+// Education is one education entry. Start/End are the same structured perioddate.PeriodDate.
+type EducationItem struct {
+	Institution string                 `json:"institution,omitempty"`
+	Degree      string                 `json:"degree,omitempty"`
+	Field       string                 `json:"field,omitempty"`
+	Start       *perioddate.PeriodDate `json:"start,omitempty"`
+	End         *perioddate.PeriodDate `json:"end,omitempty"`
+}
+
+// SkillGroup is a named cluster of skills (e.g. "Languages" → Go, Python). A group with
+// no items and no name is dropped.
+type SkillGroup struct {
+	Group string   `json:"group,omitempty"`
+	Items []string `json:"items,omitempty"`
+}
+
+// Language is one spoken/written language and its proficiency level.
+type Language struct {
+	Name  string `json:"name,omitempty"`
+	Level string `json:"level,omitempty"`
+}
+
+// Project is one portfolio/side-project entry.
+type Project struct {
+	Name    string   `json:"name,omitempty"`
+	Link    string   `json:"link,omitempty"`
+	Bullets []string `json:"bullets,omitempty"`
+}
+
+// Certification is one certification/credential. Year is the same structured
+// perioddate.PeriodDate.
+type Certification struct {
+	Name   string                 `json:"name,omitempty"`
+	Issuer string                 `json:"issuer,omitempty"`
+	Year   *perioddate.PeriodDate `json:"year,omitempty"`
+}
+
+// EmptyDocument returns an empty skeleton (default margins, no content) that is already
+// sanitize-stable: a valid starting point when a user creates a CV with no résumé to seed from.
+func EmptyDocument() Document {
+	return Document{Margins: DefaultMargins()}
+}
+
+// Sanitize bounds every string, caps every array's cardinality, and drops entries that
+// carry no content. Only the sanitized value is persisted or served, so untrusted CV
+// text cannot inject unbounded or malformed content.
+func (d *Document) Sanitize() {
+	d.Margins = d.Margins.sanitized()
+	d.Style = d.Style.sanitized()
+
+	d.Header.FullName = llm.TrimTruncateRunes(d.Header.FullName, maxNameRunes)
+	d.Header.Email = llm.TrimTruncateRunes(d.Header.Email, maxEmailRunes)
+	d.Header.Phone = llm.TrimTruncateRunes(d.Header.Phone, maxPhoneRunes)
+	d.Header.Location = llm.TrimTruncateRunes(d.Header.Location, maxLocationRunes)
+	d.Header.Links = llm.Limit(llm.NonEmpty(mapStrings(d.Header.Links, maxShortRunes)), maxLinks)
+
+	d.Summary = llm.TrimTruncateRunes(d.Summary, maxSummaryRunes)
+
+	d.Experience = llm.Limit(mapEntries(d.Experience, sanitizeExperience), MaxExperience)
+	d.Education = llm.Limit(mapEntries(d.Education, sanitizeEducation), MaxEducation)
+	d.Skills = llm.Limit(mapEntries(d.Skills, sanitizeSkillGroup), MaxSkillGroups)
+	d.Languages = llm.Limit(mapEntries(d.Languages, sanitizeLanguage), MaxLanguages)
+	d.Projects = llm.Limit(mapEntries(d.Projects, sanitizeProject), MaxProjects)
+	d.Certifications = llm.Limit(mapEntries(d.Certifications, sanitizeCertification), MaxCertifications)
+}
+
+func sanitizeExperience(e ExperienceItem) (ExperienceItem, bool) {
+	e.Role = llm.TrimTruncateRunes(e.Role, maxShortRunes)
+	e.Company = llm.TrimTruncateRunes(e.Company, maxShortRunes)
+	e.Location = llm.TrimTruncateRunes(e.Location, maxShortRunes)
+	e.Start = perioddate.Sanitize(e.Start)
+	e.End = perioddate.Sanitize(e.End)
+	e.Summary = llm.TrimTruncateRunes(e.Summary, maxBulletRunes)
+	e.Bullets = llm.Limit(llm.NonEmpty(mapStrings(e.Bullets, maxBulletRunes)), MaxBullets)
+	e.Stack = llm.Limit(llm.NonEmpty(mapStrings(e.Stack, maxShortRunes)), maxSkillItems)
+	keep := e.Role != "" || e.Company != "" || e.Location != "" ||
+		e.Start != nil || e.End != nil || e.Summary != "" || len(e.Bullets) > 0
+	return e, keep
+}
+
+func sanitizeEducation(e EducationItem) (EducationItem, bool) {
+	e.Institution = llm.TrimTruncateRunes(e.Institution, maxShortRunes)
+	e.Degree = llm.TrimTruncateRunes(e.Degree, maxShortRunes)
+	e.Field = llm.TrimTruncateRunes(e.Field, maxShortRunes)
+	e.Start = perioddate.Sanitize(e.Start)
+	e.End = perioddate.Sanitize(e.End)
+	keep := e.Institution != "" || e.Degree != "" || e.Field != "" || e.Start != nil || e.End != nil
+	return e, keep
+}
+
+func sanitizeSkillGroup(g SkillGroup) (SkillGroup, bool) {
+	g.Group = llm.TrimTruncateRunes(g.Group, maxShortRunes)
+	g.Items = llm.Limit(llm.NonEmpty(mapStrings(g.Items, maxShortRunes)), maxSkillItems)
+	keep := g.Group != "" || len(g.Items) > 0
+	return g, keep
+}
+
+func sanitizeLanguage(l Language) (Language, bool) {
+	l.Name = llm.TrimTruncateRunes(l.Name, maxShortRunes)
+	l.Level = llm.TrimTruncateRunes(l.Level, maxShortRunes)
+	return l, l.Name != "" || l.Level != ""
+}
+
+func sanitizeProject(p Project) (Project, bool) {
+	p.Name = llm.TrimTruncateRunes(p.Name, maxShortRunes)
+	p.Link = llm.TrimTruncateRunes(p.Link, maxShortRunes)
+	p.Bullets = llm.Limit(llm.NonEmpty(mapStrings(p.Bullets, maxBulletRunes)), MaxBullets)
+	return p, p.Name != "" || p.Link != "" || len(p.Bullets) > 0
+}
+
+func sanitizeCertification(c Certification) (Certification, bool) {
+	c.Name = llm.TrimTruncateRunes(c.Name, maxShortRunes)
+	c.Issuer = llm.TrimTruncateRunes(c.Issuer, maxShortRunes)
+	c.Year = perioddate.Sanitize(c.Year)
+	return c, c.Name != "" || c.Issuer != "" || c.Year != nil
+}
+
+// --- small helpers (mirror internal/candidate/resumeextract) ---
+
+// mostRecent returns at most n elements of s, keeping the LAST n (see Seed's own use).
+func mostRecent[T any](s []T, n int) []T {
+	if len(s) > n {
+		return s[len(s)-n:]
+	}
+	return s
+}
+
+// mapEntries applies fn to each entry, keeping only those fn marks as non-empty.
+func mapEntries[T any](in []T, fn func(T) (T, bool)) []T {
+	var out []T
+	for _, v := range in {
+		if cleaned, keep := fn(v); keep {
+			out = append(out, cleaned)
+		}
+	}
+	return out
+}
+
+// mapStrings clips each string to max runes.
+func mapStrings(in []string, max int) []string {
+	out := make([]string, len(in))
+	for i, v := range in {
+		out[i] = llm.TrimTruncateRunes(v, max)
+	}
+	return out
+}

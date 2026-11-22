@@ -1,0 +1,490 @@
+package companyname
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"html"
+	"maps"
+	"net"
+	"net/url"
+	"regexp"
+	"slices"
+	"strings"
+	"unicode"
+)
+
+// NewPlaceholderRegistry wires the resolvers for a board whose company is still its own board
+// id — a bare host, a "<host>/<site>" path, or a GUID that a harvest wrote into boards.company verbatim and
+// every posting then carried as its employer's public name. Unlike NewRegistry, the input is
+// the board id itself (no URL to parse, no slug to compare against), and each resolver reads
+// the name the ATS states for exactly that board, so AcceptPlaceholder needs no confidence
+// match — the same argument join's id lookup makes in Accept.
+//
+// What each resolver reads, and why:
+//   - paylocity: the listing page titles itself "{Name} - Job Opportunities".
+//   - ukgready: format-settings, which the adapter already reads for the currency, carries
+//     company.name.
+//   - oracle: the candidate-experience site's og:site_name is whatever the employer named the
+//     site, sometimes only its purpose ("Student Casual"); ExtractOracleSiteName refuses those.
+//     The recruitingCESites API is worse: "Candidate Experience site" or nothing.
+//   - dayforce: the careers page's Next.js data names the tenant as
+//     candidateCorrespondenceClientName; ExtractDayforceClientName refuses a department
+//     ("Human Resources") or nothing.
+//   - ukg: the job board's header logo alt text carries the brand;
+//     ExtractUKGBrandName refuses a missing logo or the unconfigured "Default Brand".
+//   - taleo: the career section's footer copyright names the employer ("© 2018 by Hyatt
+//     Corporation"), else the header logo's alt text ("Marcus Careers").
+//     ExtractTaleoCopyright is preferred: a legal line, where alt text is whatever a designer
+//     typed. The section's <title> is "Job Search" on every board.
+//   - hiringroom: the portal titles itself with the employer's name on both layouts
+//     (ExtractHiringRoomTitle). A tenant whose public portal is off answers 404 and stays as is.
+//   - zohorecruit: the careers page's og:site_name is the employer, while its <title> is free
+//     text the tenant typed ("Jobs at Careers"). A host-shaped name would also keep the
+//     aggregator suppression from pairing a posting with its copy, since
+//     "scrumconnect.zohorecruit.eu" and "Scrumconnect Limited" fold to different company slugs.
+//   - successfactors, teamtailor: the host titles its root page "Jobs at {Name}", or states
+//     the name in og:site_name on /jobs.
+//
+// These resolvers only run for a board whose stored company exactly equals its board id
+// (ListPlaceholderCompanyBoards). The query excludes SuccessFactors hubs because their root
+// title names the hub, not its tenants.
+//
+// Deliberately absent: adp (neither the listing nor the requisition detail names the client),
+// and workday (the detail's hiringOrganization is a per-posting legal entity, so it would split
+// one employer per subsidiary).
+func NewPlaceholderRegistry(http httpGetter) Registry {
+	return Registry{
+		"paylocity": newTitleResolver(http, "https://recruiting.paylocity.com/recruiting/jobs/All/%s", func(title string) string {
+			return ExtractSuffixName(title, " - Job Opportunities")
+		}),
+		"ukgready": ukgreadyResolver{http: http},
+		"oracle":   oracleResolver{http: http},
+		"dayforce": dayforceResolver{http: http},
+		"ukg":      ukgResolver{http: http},
+		"taleo":    taleoResolver{http: http},
+		// The portal's /jobs redirects to /portal on the newer layout; the client follows it.
+		"hiringroom": newTitleResolver(http, "https://%s.hiringroom.com/jobs", ExtractHiringRoomTitle),
+		// SuccessFactors and Teamtailor boards are career-site hosts. Their own pages
+		// state the employer as a title or og:site_name, respectively.
+		"successfactors": successfactorsResolver{http: http},
+		"teamtailor":     teamtailorResolver{http: http},
+		"zohorecruit":    zohoResolver{http: http},
+		"paycor":         newTitleResolver(http, "https://recruitingbypaycor.com/career/CareerHome.action?clientId=%s", ExtractPaycorTitle),
+	}
+}
+
+// hostOnlyBoard admits only bare, ASCII DNS hostnames with at least two labels. It refuses
+// URL components, ports, IP literals, malformed labels, and single-label hosts rather than
+// treating arbitrary board text as a career-site host. The production HTTP client separately
+// blocks non-public resolved addresses and rechecks redirects.
+func hostOnlyBoard(board string) bool {
+	if board == "" || len(board) > 253 || net.ParseIP(board) != nil {
+		return false
+	}
+	u, err := url.Parse("//" + board)
+	if err != nil || u.User != nil || u.Port() != "" || u.Host != board ||
+		u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	labels := strings.Split(board, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+type successfactorsResolver struct{ http textGetter }
+
+func (r successfactorsResolver) Name(ctx context.Context, board string) (string, error) {
+	if !hostOnlyBoard(board) {
+		return "", nil
+	}
+	name, err := newTitleResolver(r.http, "https://%s/", ExtractTitleName).Name(ctx, board)
+	if err != nil {
+		return "", err
+	}
+	return employerNameFromHostPage(name), nil
+}
+
+// teamtailorResolver reads the employer name from the Teamtailor career site's
+// Open Graph metadata. The board is the career-site host itself.
+type teamtailorResolver struct{ http textGetter }
+
+func (r teamtailorResolver) Name(ctx context.Context, board string) (string, error) {
+	if !hostOnlyBoard(board) {
+		return "", nil
+	}
+	body, err := r.http.GetText(ctx, "https://"+board+"/jobs")
+	if err != nil {
+		return "", err
+	}
+	m := ogSiteName.FindStringSubmatch(body)
+	if m == nil {
+		return "", nil
+	}
+	return employerNameFromHostPage(html.UnescapeString(m[1])), nil
+}
+
+// employerNameFromHostPage rejects exact career-site boilerplate and platform labels that can be
+// page metadata, not the employer, without blacklisting words that may occur in longer names.
+func employerNameFromHostPage(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch normalized {
+	case "careers", "jobs", "job search", "job opportunities", "career opportunities":
+		return ""
+	case "teamtailor", "successfactors", "sap successfactors":
+		return ""
+	default:
+		return strings.TrimSpace(name)
+	}
+}
+
+type zohoResolver struct{ http textGetter }
+
+// Name reads the og:site_name of the careers page the zohorecruit adapter lists; the board is
+// the careers host itself ("scrumconnect.zohorecruit.eu").
+func (r zohoResolver) Name(ctx context.Context, board string) (string, error) {
+	if board == "" || strings.Contains(board, "/") {
+		return "", nil
+	}
+	body, err := r.http.GetText(ctx, "https://"+board+"/jobs/Careers")
+	if err != nil {
+		return "", err
+	}
+	m := ogSiteName.FindStringSubmatch(body)
+	if m == nil {
+		return "", nil
+	}
+	return html.UnescapeString(m[1]), nil
+}
+
+// ExtractHiringRoomTitle reads the employer from a HiringRoom portal's <title>, which has one
+// shape per portal layout: "¡Oportunidades de Empleo en {Name}!" on the legacy /jobs page and
+// "{Name} | Portal externo" on the newer /portal. Anything else (an error page) is refused.
+func ExtractHiringRoomTitle(title string) string {
+	title = strings.TrimSpace(html.UnescapeString(title))
+	const lead = "¡Oportunidades de Empleo en "
+	if rest, ok := strings.CutPrefix(title, lead); ok {
+		return clean(strings.TrimSuffix(strings.TrimSpace(rest), "!"))
+	}
+	return ExtractSuffixName(title, " | Portal externo")
+}
+
+// paycorTitleLabels are the section labels and stock site names a branded Paycor CareerHome
+// title puts beside the employer ("Careers | Acme", "Acme : About Us"), lower-cased.
+var paycorTitleLabels = map[string]bool{
+	"careers": true, "jobs": true, "employment": true, "join our team": true, "about us": true,
+	"who we are": true, "feedback": true, "applicant tracking": true, "current openings": true,
+	"current opportunities": true, "career opportunities": true, "employment opportunities": true,
+	"job opportunities": true, "open positions": true, "mysite": true,
+}
+
+// paycorTemplatePlaceholders are the template's stock names a tenant never filled in. Unlike a
+// label they are never cut off a part: a title left holding one names nobody.
+var paycorTemplatePlaceholders = map[string]bool{"company name": true, "add company name": true}
+
+// paycorTitleLabelOrder fixes the order labels are cut in, so a title reads the same every run.
+var paycorTitleLabelOrder = slices.Sorted(maps.Keys(paycorTitleLabels))
+
+// paycorTitleSeparator splits a Paycor title into parts: a pipe, or a dash or colon standing
+// apart from its neighbours (never the hyphen inside "RNDC-IL" or "Coca-Cola").
+var paycorTitleSeparator = regexp.MustCompile(`\s*\|\s*|\s+[-–—:](?:\s+|$)`)
+
+// ExtractPaycorTitle reads the employer out of a Paycor CareerHome <title>. The branded
+// template titles the listing with the employer, alone or beside section labels ("Careers -
+// Acme", "Acme : About Us", "Careers at Acme", "Acme Careers"); the plain template has no
+// title. A label is dropped whole, as a "<label> at" lead-in or as a trailing word. A title
+// with two parts that are not labels (a name and a slogan) is refused rather than guessed
+// between.
+func ExtractPaycorTitle(title string) string {
+	name := ""
+	for _, part := range paycorTitleSeparator.Split(html.UnescapeString(title), -1) {
+		part = strings.Join(strings.Fields(part), " ")
+		if paycorTitleLabels[strings.ToLower(part)] {
+			continue
+		}
+		for _, label := range paycorTitleLabelOrder {
+			if rest, ok := cutPrefixFold(part, label+" at "); ok {
+				part = rest
+			}
+			if rest, ok := cutSuffixFold(part, " "+label); ok {
+				part = rest
+			}
+		}
+		if part == "" || paycorTitleLabels[strings.ToLower(part)] {
+			continue
+		}
+		// A second candidate is ambiguous; an all-lower-case one is a stray word ("neighorhood").
+		if name != "" || paycorTemplatePlaceholders[strings.ToLower(part)] ||
+			!strings.ContainsFunc(part, unicode.IsUpper) {
+			return ""
+		}
+		name = part
+	}
+	return name
+}
+
+// AcceptPlaceholder decodes and validates a candidate resolved for a placeholder board. No
+// text relation to the board is required (see NewPlaceholderRegistry); what is refused is a
+// candidate that would be no improvement: empty, junk, or the placeholder itself.
+func AcceptPlaceholder(board, candidate string) (string, bool) {
+	candidate = clean(html.UnescapeString(candidate))
+	if candidate == "" || strings.EqualFold(candidate, board) {
+		return "", false
+	}
+	low := strings.ToLower(candidate)
+	for _, m := range junkMarkers {
+		if strings.Contains(low, m) {
+			return "", false
+		}
+	}
+	return candidate, true
+}
+
+// splitHostBoard splits a "<host>/<rest>" board id, the shape ukgready and oracle share.
+func splitHostBoard(board string) (host, rest string, ok bool) {
+	host, rest, ok = strings.Cut(board, "/")
+	return host, rest, ok && host != "" && rest != "" && !strings.Contains(rest, "/")
+}
+
+type ukgreadyResolver struct{ http jsonGetter }
+
+// ukgreadySettings is the subset of a tenant's format-settings this package reads.
+type ukgreadySettings struct {
+	Company struct {
+		Name string `json:"name"`
+	} `json:"company"`
+}
+
+func (r ukgreadyResolver) Name(ctx context.Context, board string) (string, error) {
+	host, tenant, ok := splitHostBoard(board)
+	if !ok {
+		return "", nil
+	}
+	var s ukgreadySettings
+	url := fmt.Sprintf("https://%s/ta/rest/ui/bootstrap/companies/%%7C%s/format-settings", host, tenant)
+	if err := r.http.GetJSON(ctx, url, &s); err != nil {
+		return "", err
+	}
+	return s.Company.Name, nil
+}
+
+type dayforceResolver struct{ http textGetter }
+
+// dayforceClientName matches the field as a JSON string, escapes included, so the value can be
+// unquoted exactly rather than guessed at.
+var dayforceClientName = regexp.MustCompile(`"candidateCorrespondenceClientName"\s*:\s*("(?:[^"\\]|\\.)*")`)
+
+func (r dayforceResolver) Name(ctx context.Context, board string) (string, error) {
+	if _, _, ok := splitHostBoard(board); !ok { // "<tenant>/<site>", the same two-part shape
+		return "", nil
+	}
+	body, err := r.http.GetText(ctx, "https://jobs.dayforcehcm.com/en-US/"+board)
+	if err != nil {
+		return "", err
+	}
+	m := dayforceClientName.FindStringSubmatch(body)
+	if m == nil {
+		return "", nil
+	}
+	var name string
+	if err := json.Unmarshal([]byte(m[1]), &name); err != nil {
+		return "", nil
+	}
+	return ExtractDayforceClientName(name), nil
+}
+
+// dayforceDepartments are the sender names that name a department rather than the employer —
+// what a tenant configures when its mail goes out from HR, not from the company.
+var dayforceDepartments = map[string]bool{
+	"human resources": true, "hr": true, "recruiting": true, "recruiting team": true,
+	"recruitment": true, "talent acquisition": true, "talent acquisition team": true,
+	"careers": true, "hiring team": true, "no reply": true, "noreply": true,
+}
+
+// ExtractDayforceClientName cleans a Dayforce correspondence sender name and refuses one that
+// names a department instead of the employer.
+func ExtractDayforceClientName(name string) string {
+	name = strings.Join(strings.Fields(name), " ")
+	if dayforceDepartments[strings.ToLower(name)] {
+		return ""
+	}
+	return name
+}
+
+type ukgResolver struct{ http textGetter }
+
+// ukgLogo is the job board's header logo; its alt text is the brand the board is configured
+// under. The page renders it twice (small and large), identically.
+var (
+	ukgLogo    = regexp.MustCompile(`<img[^>]*class="[^"]*\blogo\b[^"]*"[^>]*>`)
+	ukgLogoAlt = regexp.MustCompile(`alt="([^"]*)"`)
+)
+
+func (r ukgResolver) Name(ctx context.Context, board string) (string, error) {
+	parts := strings.Split(board, "/") // "<host>/<tenant>/<guid>", as the ukg adapter parses it
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", nil
+	}
+	body, err := r.http.GetText(ctx, fmt.Sprintf("https://%s/%s/JobBoard/%s/", parts[0], parts[1], parts[2]))
+	if err != nil {
+		return "", err
+	}
+	img := ukgLogo.FindString(body)
+	if img == "" {
+		return "", nil
+	}
+	m := ukgLogoAlt.FindStringSubmatch(img)
+	if m == nil {
+		return "", nil
+	}
+	return ExtractUKGBrandName(m[1]), nil
+}
+
+// ExtractUKGBrandName turns a UKG logo's alt text into the employer's name: the platform names
+// a brand "<Name> Brand" when a tenant leaves the label as configured, and "Default Brand" when
+// it configures nothing at all.
+func ExtractUKGBrandName(alt string) string {
+	name := strings.Join(strings.Fields(html.UnescapeString(alt)), " ")
+	if rest, ok := cutSuffixFold(name, " Brand"); ok {
+		name = rest
+	}
+	if strings.EqualFold(name, "default") || strings.EqualFold(name, "brand") {
+		return ""
+	}
+	return name
+}
+
+type taleoResolver struct{ http textGetter }
+
+var (
+	taleoCopyrightLine = regexp.MustCompile(`(?i)(?:&copy;|&#169;|&#xa9;|©)\s*([^<"]{2,120})`)
+	taleoLogo          = regexp.MustCompile(`<img[^>]*class="[^"]*logo[^"]*"[^>]*>`)
+)
+
+func (r taleoResolver) Name(ctx context.Context, board string) (string, error) {
+	host, section, ok := splitHostBoard(board) // "<host>/<section>", as the taleo adapter parses it
+	if !ok {
+		return "", nil
+	}
+	body, err := r.http.GetText(ctx, fmt.Sprintf("https://%s/careersection/%s/jobsearch.ftl?lang=en", host, section))
+	if err != nil {
+		return "", err
+	}
+	// Every copyright line is read, not only the first: a page may also carry the platform's own
+	// ("© Oracle"), which ExtractTaleoCopyright refuses.
+	for _, m := range taleoCopyrightLine.FindAllStringSubmatch(body, -1) {
+		if name := ExtractTaleoCopyright(html.UnescapeString(m[1])); name != "" {
+			return name, nil
+		}
+	}
+	if img := taleoLogo.FindString(body); img != "" {
+		if m := ukgLogoAlt.FindStringSubmatch(img); m != nil {
+			return ExtractTaleoLogoAlt(m[1]), nil
+		}
+	}
+	return "", nil
+}
+
+var (
+	// taleoCopyrightLead is what precedes the holder: "Copyright", a year, a comma, "by".
+	taleoCopyrightLead = regexp.MustCompile(`(?i)^(?:copyright\s*)?(?:(?:19|20)\d\d\s*)?,?\s*(?:by\s+)?`)
+	taleoYearTail      = regexp.MustCompile(`\s+(?:19|20)\d\d$`)
+	taleoAddress       = regexp.MustCompile(`^\d+\s+\pL`)
+	// taleoRightsMarkers end the holder's name; the earliest one found wins.
+	taleoRightsMarkers = []string{" all right", " – all", " - all", ", po box", " is an equal opportunity"}
+	// taleoAbbreviations keep their trailing period — "Moxa Inc.", "D.R. Horton, Inc." — where
+	// any other final period is the end of a sentence.
+	taleoAbbreviations = map[string]bool{"inc.": true, "co.": true, "corp.": true, "ltd.": true, "st.": true}
+)
+
+// ExtractTaleoCopyright pulls the copyright holder out of a Taleo career section's footer
+// line: drop the "Copyright 2025, by" lead, cut at the rights statement or an address, keep the
+// first part of a piped line, and refuse a line that is only a year or an address.
+func ExtractTaleoCopyright(line string) string {
+	s := strings.Join(strings.Fields(line), " ")
+	s = taleoCopyrightLead.ReplaceAllString(s, "")
+	// Searched with a leading space so a statement with no holder before it ("2025 All rights
+	// reserved.") cuts to nothing rather than becoming the name.
+	low, cut := " "+strings.ToLower(s), len(s)
+	for _, m := range taleoRightsMarkers {
+		if i := strings.Index(low, m); i >= 0 && i < cut {
+			cut = max(i-1, 0)
+		}
+	}
+	s = s[:cut]
+	first := ""
+	for _, part := range strings.Split(s, "|") {
+		if part = strings.TrimSpace(part); part != "" {
+			first = part
+			break
+		}
+	}
+	if taleoAddress.MatchString(first) {
+		return "" // "2016 | 8000 York Road | Towson, MD": the footer names a place, not a holder
+	}
+	s = first
+	// "West Virginia University. West Virginia University" — the holder, then a sentence that
+	// repeats it.
+	if before, after, ok := strings.Cut(s, ". "); ok && strings.HasPrefix(after, before) {
+		s = before
+	}
+	s = taleoYearTail.ReplaceAllString(strings.TrimRight(s, " ,-–"), "")
+	if f := strings.Fields(s); len(f) > 0 && strings.HasSuffix(s, ".") && !taleoAbbreviations[strings.ToLower(f[len(f)-1])] {
+		s = strings.TrimSuffix(s, ".")
+	}
+	if !strings.ContainsFunc(s, unicode.IsLetter) {
+		return ""
+	}
+	for _, w := range words.FindAllString(s, -1) {
+		if w := strings.ToLower(w); w == "oracle" || w == "taleo" {
+			return "" // the platform's copyright, not the employer's
+		}
+	}
+	return s
+}
+
+var (
+	taleoAltLeads = []string{"Careers at ", "The black version of the ", "The white version of the "}
+	taleoAltTails = []string{" logo", " Taleo", " Careers", " Jobs"}
+	// taleoAltWords refuse an alt text naming the platform or the page rather than the employer.
+	taleoAltWords = map[string]bool{"taleo": true, "oracle": true, "staging": true, "search": true, "job": true, "jobs": true, "careers": true}
+)
+
+// ExtractTaleoLogoAlt turns a Taleo header logo's alt text into the employer's name: drop a
+// lead-in, cut stacked tails, refuse what names the platform or the page.
+func ExtractTaleoLogoAlt(alt string) string {
+	s := strings.Join(strings.Fields(html.UnescapeString(alt)), " ")
+	for _, lead := range taleoAltLeads {
+		if len(s) > len(lead) && strings.EqualFold(s[:len(lead)], lead) {
+			s = s[len(lead):]
+			break
+		}
+	}
+	for cut := true; cut; {
+		cut = false
+		for _, tail := range taleoAltTails {
+			if rest, ok := cutSuffixFold(s, tail); ok {
+				s, cut = rest, true
+				break
+			}
+		}
+	}
+	for _, w := range words.FindAllString(s, -1) {
+		if taleoAltWords[strings.ToLower(w)] {
+			return ""
+		}
+	}
+	return strings.TrimSpace(s)
+}

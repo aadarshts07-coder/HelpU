@@ -1,0 +1,500 @@
+package sources
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/url"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// errSeekTest is the failure the fake returns for a page the test marked as failing.
+var errSeekTest = errors.New("seek: boom")
+
+// seekPost builds a minimal usable listing posting (id, title, employer).
+func seekPost(id, title, company string) seekPosting {
+	return seekPosting{ID: id, Title: title, CompanyName: company}
+}
+
+// seekArrangements builds the nested work-arrangement shape SEEK's listing carries.
+func seekArrangements(labels ...string) seekWorkArrangements {
+	var wa seekWorkArrangements
+	for _, l := range labels {
+		var one seekWorkArrangement
+		one.Label.Text = l
+		wa.Data = append(wa.Data, one)
+	}
+	return wa
+}
+
+// seekFake serves search pages keyed by their page param and GraphQL details keyed by job id, so
+// one fake drives both stages of the crawl.
+type seekFake struct {
+	searchByPage map[int][]seekPosting // page -> postings that page yields
+	searchErr    map[int]bool          // page -> GetJSON returns an error
+	searchURLs   []string              // search URLs requested, in order
+	// total, when set, is the totalCount every search page states; otherwise it is the number
+	// of distinct postings across searchByPage, which is what JobStreet states at pageSize 100.
+	total      *int
+	detailByID map[string]string // job id -> the GraphQL content it answers
+	detailErr  map[string]bool   // job id -> PostJSON returns an error
+	// The adapter fans its detail fetches out across a worker pool, so these recorders are written
+	// from several goroutines at once. Assertions read them after FetchNew has joined the pool.
+	mu         sync.Mutex
+	detailHits []string // job ids whose detail was requested
+	detailURL  string   // the endpoint the detail call went to
+}
+
+func (f *seekFake) GetJSON(_ context.Context, u string, v any) error {
+	f.searchURLs = append(f.searchURLs, u)
+	pu, err := url.Parse(u)
+	if err != nil {
+		return err
+	}
+	page := 0
+	if p := pu.Query().Get("page"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			page = n
+		}
+	}
+	if f.searchErr[page] {
+		return errSeekTest
+	}
+	out, ok := v.(*seekSearchPage)
+	if !ok {
+		return errSeekTest
+	}
+	out.Data = f.searchByPage[page]
+	out.TotalCount = f.statedTotal()
+	return nil
+}
+
+func (f *seekFake) statedTotal() int {
+	if f.total != nil {
+		return *f.total
+	}
+	ids := map[string]bool{}
+	for _, posts := range f.searchByPage {
+		for _, p := range posts {
+			ids[p.ID] = true
+		}
+	}
+	return len(ids)
+}
+
+// PostJSON serves the GraphQL detail. It records the job id every detail call asked for, so a test
+// can assert that a posting the catalogue already holds costs no request at all.
+func (f *seekFake) PostJSON(_ context.Context, u string, body, v any) error {
+	id := seekTestJobID(body)
+	f.mu.Lock()
+	f.detailHits = append(f.detailHits, id)
+	f.detailURL = u
+	f.mu.Unlock()
+	if f.detailErr[id] {
+		return errSeekTest
+	}
+	out, ok := v.(*seekDetailResponse)
+	if !ok {
+		return errSeekTest
+	}
+	out.Data.JobDetails.Job.Content = f.detailByID[id]
+	return nil
+}
+
+// seekTestJobID digs the jobId out of the GraphQL request body the adapter built.
+func seekTestJobID(body any) string {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return ""
+	}
+	var req struct {
+		Variables struct {
+			JobID string `json:"jobId"`
+		} `json:"variables"`
+	}
+	if err := json.Unmarshal(b, &req); err != nil {
+		return ""
+	}
+	return req.Variables.JobID
+}
+
+func TestSeekUnknownMarketFailsTheBoard(t *testing.T) {
+	fake := &seekFake{}
+	_, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{
+		Company: "SEEK Nowhere", Region: "xx", Board: "6287",
+	})
+	if err == nil {
+		t.Fatal("Fetch with an unknown market: want an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "xx") {
+		t.Errorf("error should name the unknown market, got %q", err)
+	}
+	if len(fake.searchURLs) != 0 {
+		t.Errorf("an unknown market must not issue a request, got %v", fake.searchURLs)
+	}
+}
+
+func TestSeekSearchURLCarriesMarketAndSlice(t *testing.T) {
+	fake := &seekFake{searchByPage: map[int][]seekPosting{1: {seekPost("1", "Dev", "Co")}}}
+	if _, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{Region: "au", Board: "6287"}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(fake.searchURLs) == 0 {
+		t.Fatal("no search request issued")
+	}
+	pu, err := url.Parse(fake.searchURLs[0])
+	if err != nil {
+		t.Fatalf("parse search URL: %v", err)
+	}
+	if pu.Host != "www.seek.com.au" {
+		t.Errorf("host = %q, want www.seek.com.au", pu.Host)
+	}
+	q := pu.Query()
+	for param, want := range map[string]string{
+		"siteKey":           "AU-Main",
+		"where":             "All Australia",
+		"subclassification": "6287",
+		"page":              "1",
+		"sortmode":          "ListedDate",
+	} {
+		if got := q.Get(param); got != want {
+			t.Errorf("%s = %q, want %q", param, got, want)
+		}
+	}
+	// The result window is reached in as few requests as possible, so the walk asks for full pages.
+	if q.Get("pageSize") != "100" {
+		t.Errorf("pageSize = %q, want 100", q.Get("pageSize"))
+	}
+}
+
+func TestSeekWalksPagesUntilOneAddsNothingNew(t *testing.T) {
+	fake := &seekFake{searchByPage: map[int][]seekPosting{
+		1: {seekPost("1", "A", "Co"), seekPost("2", "B", "Co")},
+		2: {seekPost("3", "C", "Co")},
+		// Page 3 repeats page 2's posting: SEEK clamping past its last page, not new inventory.
+		3: {seekPost("3", "C", "Co")},
+		4: {seekPost("4", "Never reached", "Co")},
+	}}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{Region: "au", Board: "6287"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) != 3 {
+		t.Fatalf("len(jobs) = %d, want 3 (pages 1-2, page 3 adds nothing)", len(jobs))
+	}
+	if len(fake.searchURLs) != 3 {
+		t.Errorf("requested %d pages, want 3 (the walk stops on the page that adds nothing)", len(fake.searchURLs))
+	}
+}
+
+// SEEK serves at most ~550 results per query, so a well-behaved edge ends the walk on its own. This
+// pins the backstop for one that does not: an edge answering every page with fresh postings must
+// not loop the crawl forever.
+func TestSeekWalkIsBackstoppedByAPageCeiling(t *testing.T) {
+	fake := &seekFake{searchByPage: map[int][]seekPosting{}}
+	for page := 1; page <= 50; page++ {
+		fake.searchByPage[page] = []seekPosting{seekPost(strconv.Itoa(page), "Endless", "Co")}
+	}
+	if _, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{Region: "au", Board: "6287"}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(fake.searchURLs) >= 50 {
+		t.Fatalf("walk requested %d pages: it is not backstopped", len(fake.searchURLs))
+	}
+	// The ceiling must still clear SEEK's own window (~550 results at 100 per page).
+	if want := 550 / seekPageSize; len(fake.searchURLs) < want {
+		t.Errorf("walk stopped after %d pages, too few to reach SEEK's ~550-result window", len(fake.searchURLs))
+	}
+}
+
+// The repository-wide rule for a paginated listing walk: the FIRST page failing is a board-level
+// error, a LATER page failing ends the walk with what it gathered. seek is not a fullCatalog source,
+// so a partial crawl is safe and only a wholly unreachable board should be reported.
+func TestSeekFirstPageFailureFailsTheBoard(t *testing.T) {
+	fake := &seekFake{
+		searchByPage: map[int][]seekPosting{1: {seekPost("1", "A", "Co")}},
+		searchErr:    map[int]bool{1: true},
+	}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{Region: "au", Board: "6287"})
+	if err == nil {
+		t.Fatalf("first page failing: want a board-level error, got %d jobs", len(jobs))
+	}
+}
+
+func TestSeekLaterPageFailureKeepsWhatItGathered(t *testing.T) {
+	fake := &seekFake{
+		searchByPage: map[int][]seekPosting{1: {seekPost("1", "A", "Co"), seekPost("2", "B", "Co")}},
+		searchErr:    map[int]bool{2: true},
+	}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{Region: "au", Board: "6287"})
+	if err != nil {
+		t.Fatalf("later page failing must not fail the board: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Errorf("len(jobs) = %d, want 2 (page 1 survives page 2's failure)", len(jobs))
+	}
+}
+
+func TestSeekMapsListingFieldsToAJob(t *testing.T) {
+	p := seekPost("93497500", "Senior Go Engineer", "Atlassian")
+	p.ListingDate = "2026-07-22T11:47:32Z"
+	p.Locations = []seekLocation{{Label: "Smithfield, Sydney NSW", CountryCode: "AU"}}
+
+	fake := &seekFake{searchByPage: map[int][]seekPosting{1: {p}}}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{Region: "au", Board: "6290"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("len(jobs) = %d, want 1", len(jobs))
+	}
+	j := jobs[0]
+	if j.ExternalID != "93497500" || j.Title != "Senior Go Engineer" || j.Company != "Atlassian" {
+		t.Errorf("id/title/company wrong: %q / %q / %q", j.ExternalID, j.Title, j.Company)
+	}
+	// The /job/<id> page is Cloudflare-gated for our crawler but is the URL a human needs.
+	if j.URL != "https://www.seek.com.au/job/93497500" {
+		t.Errorf("URL = %q, want the market host's /job/<id>", j.URL)
+	}
+	if j.Location != "Smithfield, Sydney NSW" {
+		t.Errorf("Location = %q", j.Location)
+	}
+	if len(j.Countries) != 1 || j.Countries[0] != "au" {
+		t.Errorf("Countries = %v, want [au] from the posting's structured country code", j.Countries)
+	}
+	if j.PostedAt == nil || j.PostedAt.Format("2006-01-02") != "2026-07-22" {
+		t.Errorf("PostedAt = %v, want 2026-07-22", j.PostedAt)
+	}
+}
+
+// Roughly one posting in thirty has no profiled employer; advertiser.description carries the name
+// the employer typed instead — and sometimes SEEK's "Private Advertiser" placeholder, which must
+// never become a company.
+func TestSeekResolvesEmployerPerPosting(t *testing.T) {
+	profiled := seekPost("1", "Profiled", "Atlassian")
+	profiled.Advertiser.Description = "Atlassian Pty Ltd"
+
+	advertiserOnly := seekPost("2", "Advertiser only", "")
+	advertiserOnly.Advertiser.Description = "Proxmox Server Solutions GmbH"
+
+	placeholder := seekPost("3", "Private", "")
+	placeholder.Advertiser.Description = "Private Advertiser"
+
+	nameless := seekPost("4", "Nameless", "")
+	noID := seekPost("", "No id", "Co")
+
+	fake := &seekFake{searchByPage: map[int][]seekPosting{
+		1: {profiled, advertiserOnly, placeholder, nameless, noID},
+	}}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{Region: "au", Board: "6290"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	got := map[string]string{}
+	for _, j := range jobs {
+		got[j.ExternalID] = j.Company
+	}
+	if len(got) != 2 {
+		t.Fatalf("kept %d postings (%v), want 2 — placeholder, nameless and id-less are dropped", len(got), got)
+	}
+	if got["1"] != "Atlassian" {
+		t.Errorf("profiled employer = %q, want Atlassian (the profile wins over the advertiser)", got["1"])
+	}
+	if got["2"] != "Proxmox Server Solutions GmbH" {
+		t.Errorf("advertiser fallback = %q", got["2"])
+	}
+}
+
+func TestSeekWorkModePrefersTheMostRemoteArrangement(t *testing.T) {
+	cases := []struct {
+		arrangements []string
+		want         string
+	}{
+		{[]string{"Remote"}, "remote"},
+		{[]string{"Hybrid"}, "hybrid"},
+		{[]string{"On-site"}, "onsite"},
+		{[]string{"On-site", "Hybrid"}, "hybrid"},
+		{[]string{"On-site", "Remote"}, "remote"},
+		// Unstated must stay empty so the pipeline's location heuristic decides instead.
+		{nil, ""},
+		{[]string{"Something SEEK invented"}, ""},
+	}
+	for _, c := range cases {
+		p := seekPost("1", "T", "Co")
+		p.WorkArrangements = seekArrangements(c.arrangements...)
+		if got := p.workMode(); got != c.want {
+			t.Errorf("workMode(%v) = %q, want %q", c.arrangements, got, c.want)
+		}
+	}
+}
+
+func TestSeekRemoteFlagTracksWorkMode(t *testing.T) {
+	remote := seekPost("1", "Remote role", "Co")
+	remote.WorkArrangements = seekArrangements("Remote")
+	onsite := seekPost("2", "Onsite role", "Co")
+	onsite.WorkArrangements = seekArrangements("On-site")
+
+	fake := &seekFake{searchByPage: map[int][]seekPosting{1: {remote, onsite}}}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{Region: "au", Board: "6290"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !jobs[0].Remote || jobs[0].WorkMode != "remote" {
+		t.Errorf("remote posting: Remote=%v WorkMode=%q", jobs[0].Remote, jobs[0].WorkMode)
+	}
+	if jobs[1].Remote {
+		t.Errorf("on-site posting must not be marked Remote")
+	}
+}
+
+func TestSeekEmploymentTypeMapping(t *testing.T) {
+	for _, c := range []struct {
+		workTypes []string
+		want      string
+	}{
+		{[]string{"Full time"}, "full_time"},
+		{[]string{"Part time"}, "part_time"},
+		{[]string{"Contract/Temp"}, "contract"},
+		{[]string{"Casual/Vacation"}, ""},
+		{nil, ""},
+	} {
+		if got := seekEmploymentType(c.workTypes); got != c.want {
+			t.Errorf("seekEmploymentType(%v) = %q, want %q", c.workTypes, got, c.want)
+		}
+	}
+}
+
+// SEEK's salaryLabel is free text — anything from "$75,000 – $85,000 per year" to "160000" to
+// "Rates Negotiable" — so it belongs in the description, not in Job's structured salary fields.
+func TestSeekSalaryLabelIsFoldedIntoTheDescription(t *testing.T) {
+	paid := seekPost("1", "Paid", "Co")
+	paid.SalaryLabel = "$75,000 – $85,000 per year"
+	silent := seekPost("2", "Silent", "Co")
+
+	fake := &seekFake{searchByPage: map[int][]seekPosting{1: {paid, silent}}}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).Fetch(context.Background(), CompanyEntry{Region: "au", Board: "6290"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !strings.Contains(jobs[0].Description, "$75,000 – $85,000 per year") {
+		t.Errorf("salary label missing from description: %q", jobs[0].Description)
+	}
+	if jobs[0].SalaryMin != nil || jobs[0].SalaryMax != nil || jobs[0].SalaryCurrency != "" {
+		t.Error("a free-text label must not populate the structured salary fields")
+	}
+	if jobs[1].Description != "" {
+		t.Errorf("no salary label must yield no paragraph, got %q", jobs[1].Description)
+	}
+}
+
+// The listing carries only a one-line teaser, so bodies cost a GraphQL call each. Spending one on a
+// posting the catalogue already holds would make every crawl cost the whole catalogue.
+func TestSeekFetchNewHydratesOnlyPostingsTheCatalogueLacks(t *testing.T) {
+	fresh := seekPost("101", "New role", "Co")
+	known := seekPost("202", "Known role", "Co")
+	fake := &seekFake{
+		searchByPage: map[int][]seekPosting{1: {fresh, known}},
+		detailByID:   map[string]string{"101": "<p>Full body</p>", "202": "<p>Should never be asked for</p>"},
+	}
+	src, ok := NewSeek(fake, newSeekDetailNetwork(fake, nil)).(HydratingSource)
+	if !ok {
+		t.Fatal("seek must implement HydratingSource")
+	}
+	jobs, err := src.FetchNew(context.Background(), CompanyEntry{Region: "au", Board: "6290"},
+		func(id string) bool { return id == "202" })
+	if err != nil {
+		t.Fatalf("FetchNew: %v", err)
+	}
+	if !slices.Equal(fake.detailHits, []string{"101"}) {
+		t.Errorf("detail requested for %v, want only [101]", fake.detailHits)
+	}
+	byID := map[string]Job{}
+	for _, j := range jobs {
+		byID[j.ExternalID] = j
+	}
+	if !strings.Contains(byID["101"].Description, "Full body") {
+		t.Errorf("new posting was not hydrated: %q", byID["101"].Description)
+	}
+	if byID["101"].SeenRefresh {
+		t.Error("a newly hydrated posting must not be marked SeenRefresh")
+	}
+	if !byID["202"].SeenRefresh {
+		t.Error("a posting the catalogue holds must be marked SeenRefresh so the pipeline only refreshes liveness")
+	}
+	if byID["202"].Description != "" {
+		t.Errorf("a SeenRefresh posting must carry no body, got %q", byID["202"].Description)
+	}
+}
+
+func TestSeekDetailIsAppendedAfterTheSalaryParagraph(t *testing.T) {
+	p := seekPost("101", "Paid role", "Co")
+	p.SalaryLabel = "$120,000 per year"
+	fake := &seekFake{
+		searchByPage: map[int][]seekPosting{1: {p}},
+		detailByID:   map[string]string{"101": "<p>What you will do</p>"},
+	}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).(HydratingSource).FetchNew(context.Background(),
+		CompanyEntry{Region: "au", Board: "6290"}, func(string) bool { return false })
+	if err != nil {
+		t.Fatalf("FetchNew: %v", err)
+	}
+	if fake.detailURL != "https://www.seek.com.au/graphql" {
+		t.Errorf("detail endpoint = %q, want the market host's /graphql", fake.detailURL)
+	}
+	salary, body := strings.Index(jobs[0].Description, "$120,000"), strings.Index(jobs[0].Description, "What you will do")
+	if salary < 0 || body < 0 || salary > body {
+		t.Errorf("want the salary paragraph then the body, got %q", jobs[0].Description)
+	}
+}
+
+// Storing a posting whose detail failed is NOT recoverable: seen reports only row existence, so the
+// next crawl marks it SeenRefresh and it stays body-less forever. Deferring it by one crawl is
+// recoverable. Measured on prod, SEEK refuses details in bursts of thousands, so this is the common
+// case rather than the rare one, and the asymmetry decides it — unlike hh and the other hydrating
+// adapters, seek drops the posting.
+func TestSeekFailedDetailDefersThePostingInsteadOfStoringItBodyless(t *testing.T) {
+	fake := &seekFake{
+		searchByPage: map[int][]seekPosting{1: {
+			seekPost("1", "Transport fails", "Co"),
+			seekPost("2", "Empty body", "Co"),
+			seekPost("3", "Hydrates fine", "Co"),
+		}},
+		detailErr:  map[string]bool{"1": true},
+		detailByID: map[string]string{"2": "   ", "3": "<p>A real body</p>"},
+	}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).(HydratingSource).FetchNew(context.Background(),
+		CompanyEntry{Region: "au", Board: "6290"}, func(string) bool { return false })
+	if err != nil {
+		t.Fatalf("FetchNew: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("len(jobs) = %d, want 1 — only the posting that hydrated is stored", len(jobs))
+	}
+	if jobs[0].ExternalID != "3" || !strings.Contains(jobs[0].Description, "A real body") {
+		t.Errorf("wrong survivor: %q / %q", jobs[0].ExternalID, jobs[0].Description)
+	}
+}
+
+// The drop rule must not swallow a posting the catalogue already holds: that path spends no detail
+// request at all, so there is no failure to react to.
+func TestSeekSeenPostingSurvivesWithoutADetailRequest(t *testing.T) {
+	fake := &seekFake{
+		searchByPage: map[int][]seekPosting{1: {seekPost("42", "Known", "Co")}},
+		detailErr:    map[string]bool{"42": true}, // would fail if it were ever asked for
+	}
+	jobs, err := NewSeek(fake, newSeekDetailNetwork(fake, nil)).(HydratingSource).FetchNew(context.Background(),
+		CompanyEntry{Region: "au", Board: "6290"}, func(string) bool { return true })
+	if err != nil {
+		t.Fatalf("FetchNew: %v", err)
+	}
+	if len(jobs) != 1 || !jobs[0].SeenRefresh {
+		t.Fatalf("a seen posting must survive as a SeenRefresh, got %+v", jobs)
+	}
+	if len(fake.detailHits) != 0 {
+		t.Errorf("a seen posting must cost no detail request, got %v", fake.detailHits)
+	}
+}

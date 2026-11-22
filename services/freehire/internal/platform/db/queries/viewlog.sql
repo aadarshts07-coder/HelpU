@@ -1,0 +1,95 @@
+-- View-log aggregation queries, used by cmd/rollup-views. The worker parses nginx
+-- access logs off the request path (see internal/application/viewlog), then resolves slugs and
+-- applies per-(day, job) unique counts here.
+
+-- name: ResolveSlugsToJobIDs :many
+-- Map public slugs to job ids. Unknown slugs are simply absent from the result, so
+-- the worker skips views for jobs that no longer exist. The assistant's
+-- `present_jobs` tool uses it for the same absence: a slug the model invented is
+-- missing here, and is dropped from the deck rather than shown to the user.
+SELECT id, public_slug
+FROM jobs
+WHERE public_slug = ANY(sqlc.arg('slugs')::text[]);
+
+-- name: ApplyDailyView :batchexec
+-- Apply one (day, job) unique count additively: upsert the daily rollup and add the
+-- total delta to jobs.view_count, in one statement. The data-modifying CTE runs even
+-- though the primary query does not read it. Issued as a pgx batch (one call per
+-- tuple) so a chunk's rows land in a single round trip; view_count accumulates across
+-- a job's day-rows, and additivity lets a day spanning two rotated files sum right.
+--
+-- Two deltas, not one plus a breakdown. `total_delta` counts the visitors who
+-- produced EITHER signal and is what `uniques` has always held — GET /api/v1/stats/catalog
+-- reads it, and jobs.view_count accrues it (plus ApplyDailyAgentView's agent views), so it
+-- must not move. `page_delta` counts the visitors who opened the PAGE, the only
+-- bot-filtered signal of the two.
+-- A visitor who did both is one visitor in each, so the two do not sum with an API
+-- count; the only relation between them is page_delta <= total_delta.
+WITH ins AS (
+    INSERT INTO job_daily_views (day, job_id, uniques, page_uniques)
+    VALUES (sqlc.arg('day'), sqlc.arg('job_id'), sqlc.arg('total_delta'), sqlc.arg('page_delta'))
+    ON CONFLICT (day, job_id)
+        DO UPDATE SET uniques      = job_daily_views.uniques + EXCLUDED.uniques,
+                      page_uniques = job_daily_views.page_uniques + EXCLUDED.page_uniques
+)
+-- view_count is a sortable attribute of the search document, but it is NOT queued for
+-- the drain: cmd/rollup-views writes the new figures to the index itself at the end of
+-- the run (search.SetViewCounts). Queuing them re-built ~1.7M whole documents a day and
+-- kept search_outbox from ever emptying (2026-11-14).
+UPDATE jobs SET view_count = view_count + sqlc.arg('total_delta')
+WHERE id = sqlc.arg('job_id');
+
+-- name: IsViewLogFileProcessed :one
+-- Cursor read: has this rotated file (by content signature) been applied? The
+-- signature is stable across rename and gzip, so a re-run recognizes the same file.
+SELECT EXISTS(
+    SELECT 1 FROM processed_view_logs WHERE signature = sqlc.arg('signature')
+);
+
+-- name: MarkViewLogFileProcessed :execrows
+-- Cursor write: mark a rotated file applied. Idempotent — a concurrent/rerun mark
+-- is a no-op. It reports whether THIS call claimed the file, so a pass that marks
+-- first, inside the transaction that applies the counts, applies a file at most
+-- once even when two runs race past the IsViewLogFileProcessed read.
+INSERT INTO processed_view_logs (signature, filename)
+VALUES (sqlc.arg('signature'), sqlc.arg('filename'))
+ON CONFLICT (signature) DO NOTHING;
+
+-- name: ApplyDailyAgentView :batchexec
+-- Apply one (day, job) agent-view count additively: upsert job_daily_views.agent_uniques
+-- and add the same delta to jobs.view_count. `uniques` is written as 0 on insert (it is
+-- NOT NULL with no default) and never touched on conflict, so the nginx figures and
+-- GET /api/v1/stats/catalog keep their meaning.
+WITH ins AS (
+    INSERT INTO job_daily_views (day, job_id, uniques, agent_uniques)
+    VALUES (sqlc.arg('day'), sqlc.arg('job_id'), 0, sqlc.arg('delta'))
+    ON CONFLICT (day, job_id)
+        DO UPDATE SET agent_uniques = job_daily_views.agent_uniques + EXCLUDED.agent_uniques
+)
+-- Not queued for the drain, for the same reason as ApplyDailyView.
+UPDATE jobs SET view_count = view_count + sqlc.arg('delta')
+WHERE id = sqlc.arg('job_id');
+
+-- name: GetViewLogCursor :one
+-- The last (job_id, day) key applied from a part-applied file. No row: nothing applied.
+SELECT job_id, day FROM view_log_cursors WHERE signature = sqlc.arg('signature');
+
+-- name: AdvanceViewLogCursor :execrows
+-- Move a file's cursor from the key this run read to the last key of the chunk it is
+-- applying, in the chunk's own transaction. A compare-and-swap: with no previous key it
+-- only inserts, and with one it only moves a cursor still standing there — so 0 rows means
+-- another run has applied this file since, and the chunk must roll back.
+INSERT INTO view_log_cursors AS c (signature, filename, job_id, day)
+VALUES (sqlc.arg('signature'), sqlc.arg('filename'), sqlc.arg('job_id'), sqlc.arg('day'))
+ON CONFLICT (signature) DO UPDATE
+    SET job_id = EXCLUDED.job_id, day = EXCLUDED.day, updated_at = now()
+    WHERE c.job_id = sqlc.narg('prev_job_id') AND c.day = sqlc.narg('prev_day');
+
+-- name: GetJobViewCounts :many
+-- The current view_count of the jobs a rollup run touched, for the index write that
+-- replaces the old per-view search_outbox enqueue. Only jobs public search can return:
+-- closed and duplicate documents are filtered out of every query, so writing their count
+-- only costs index time, and a reopened job is rewritten whole by the drain.
+SELECT id, view_count FROM jobs
+WHERE id = ANY(sqlc.arg('ids')::bigint[])
+  AND closed_at IS NULL AND duplicate_of IS NULL AND NOT is_private;

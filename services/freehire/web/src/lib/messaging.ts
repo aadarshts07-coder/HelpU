@@ -1,0 +1,113 @@
+// Presentation of conversations from the messaging core, for every kind and persona. Kept
+// free of Svelte so it unit-tests in plain node; the dock's window arithmetic is
+// `messagingDock.ts`, and what is buddy-only (the "Message" control) is `buddies.ts`.
+
+import { localDay } from './buddyPresent.js';
+import type { Conversation, ConversationReport, ConversationStatus, Counterpart } from './types.js';
+
+const STATUS_LABELS = {
+  incoming: 'Invitation',
+  outgoing: 'Waiting for a reply',
+  open: 'Chat',
+  closed: 'Closed',
+} as const satisfies Record<ConversationStatus, string>;
+
+export function conversationStatusLabel(status: ConversationStatus): string {
+  return STATUS_LABELS[status];
+}
+
+/** What the other side is called in text (headers, labels, the screen-reader name), from
+ *  the persona they speak as. An unreachable counterpart carries no name at all. */
+export function counterpartName(counterpart: Counterpart): string {
+  switch (counterpart.persona) {
+    case 'buddy':
+      return counterpart.reachable ? counterpart.detail.handle : 'Former member';
+  }
+}
+
+/** The wording that belongs to a conversation's kind: why a closed one closed, and what a
+ *  block does. */
+interface KindCopy {
+  /** Closed while the other side is still reachable. */
+  closed: string;
+  /** Closed because the other side is no longer reachable. */
+  gone: string;
+  block: string;
+}
+
+const KIND_COPY = {
+  buddy: {
+    closed: 'This conversation closed when one of you left interview buddies.',
+    gone: 'This member is no longer in interview buddies, so the conversation is closed.',
+    block:
+      'The conversation closes for good, and you stop seeing each other in lists, the feed and invitations. This cannot be undone.',
+  },
+} as const satisfies Record<Conversation['kind'], KindCopy>;
+
+export function kindCopy(kind: Conversation['kind']): KindCopy {
+  return KIND_COPY[kind];
+}
+
+const REPORT_REASON_LABELS = {
+  spam: 'Spam',
+  harassment: 'Harassment',
+  scam: 'Scam',
+  other: 'Other',
+} as const satisfies Record<ConversationReport['reason'], string>;
+
+export function reportReasonLabel(reason: ConversationReport['reason']): string {
+  return REPORT_REASON_LABELS[reason];
+}
+
+export function mergeMessages<T extends { id: number }>(current: T[], incoming: T[]): T[] {
+  const byId = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) byId.set(message.id, message);
+  return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
+/** How close to the bottom (px) the message list must be for new messages to keep it
+ *  pinned there. A reader scrolled further up is reading history and stays put. */
+const FOLLOW_SLACK_PX = 48;
+
+export function followsNewMessages(list: { scrollTop: number; scrollHeight: number; clientHeight: number }): boolean {
+  return list.scrollHeight - list.scrollTop - list.clientHeight <= FOLLOW_SLACK_PX;
+}
+
+/** Cmd+Enter or Ctrl+Enter sends; a plain Enter is a newline, and a key pressed while an
+ *  input method is composing belongs to the composition. */
+export function isSendShortcut(e: { key: string; metaKey: boolean; ctrlKey: boolean; isComposing?: boolean }): boolean {
+  return e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing;
+}
+
+// A link to one of our job pages, absolute (this site) or site-relative, standing on its
+// own — at the start, after a space, or after an opening bracket or quote: a bare
+// "/jobs/…" inside someone else's URL is not ours.
+const JOB_LINK = /(?:^|[\s([<"'«])(?:(?:https?:\/\/)?(?:www\.)?freehire\.me)?\/jobs\/([a-z0-9-]+)/gi;
+const JOB_PREVIEWS = 2;
+
+/** The job pages a message links to, once each, in order — what the chat previews under
+ *  the message. At most two: a pasted list should stay a message, not a wall of cards. */
+export function messageJobSlugs(body: string): string[] {
+  const slugs: string[] = [];
+  for (const m of body.matchAll(JOB_LINK)) {
+    const slug = m[1]?.toLowerCase();
+    if (slug && !slugs.includes(slug)) slugs.push(slug);
+    if (slugs.length === JOB_PREVIEWS) break;
+  }
+  return slugs;
+}
+
+/** Messages under the viewer's local calendar day they were sent, in log order — the
+ *  chat's day separators. */
+export function messageDays<T extends { created_at: string }>(
+  messages: readonly T[],
+): { day: string; messages: T[] }[] {
+  const out: { day: string; messages: T[] }[] = [];
+  for (const m of messages) {
+    const day = localDay(new Date(m.created_at));
+    const last = out[out.length - 1];
+    if (last && last.day === day) last.messages.push(m);
+    else out.push({ day, messages: [m] });
+  }
+  return out;
+}

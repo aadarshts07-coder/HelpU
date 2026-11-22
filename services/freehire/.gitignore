@@ -1,0 +1,256 @@
+# Binaries
+/bin/
+/out/
+hire
+
+# Local git worktrees for isolated feature work.
+/.worktrees/
+# Worker binaries. release.sh builds every cmd/ target into the checkout ROOT, so each
+# one lands here as an untracked file — and one committed by accident (prune, 25 MB, in
+# #1212) blocks `git pull` on every deploy host that already has its own build sitting
+# there. Named individually rather than by a glob: these are real, expected artifacts,
+# and a blanket rule would also swallow a source file someone adds with the same name.
+#
+# Each pattern is ANCHORED with a leading slash. Unanchored, a bare name matches that name
+# at ANY depth — including the package directory of the same name, so `migrate` silently
+# ignored every new file under internal/migrate/, and `enrich`/`embed`/`ingest` did the same
+# to theirs. 26 package directories were shadowed this way; a new source file in one of them
+# would simply never be committed.
+# The worker entries below used to be written out three times, 22 of them twice, which is
+# how a target added to one block silently went unignored by the other two. This is now the
+# union of all three plus every current cmd/ target; 9 of the entries no longer have
+# a target and stay because a deploy host that built them still has that binary sitting in
+# its checkout root. Regenerate after adding a worker:
+#   { ls cmd; grep -E '^/[^/]+$' .gitignore | tr -d /; } | sort -u | sed 's|^|/|'
+# The 9 retired ones are backfill-company-info, backfill-engagement, backfill-justjoin, backfill-requirements, discord-register-commands, hire-api, prune, reslug and similar-backfill.
+/add-board
+/adzuna-liveness
+/apple-revoke
+/auth-cleanup
+/auto-apply
+/auto-apply-orchestrate
+/backfill-catalog-history
+/backfill-company-info
+/backfill-company-info-wikipedia
+/backfill-company-names
+/backfill-company-type-hint
+/backfill-derive
+/backfill-descriptions
+/backfill-engagement
+/backfill-justjoin
+/backfill-requirements
+/backfill-telegram-prefilter
+/billing-sync
+/broadcast
+/build-suggestions
+/cal-sync
+/capture-apply-form
+/catalog-coverage
+/catalogue-export
+/changes-webhook
+/classify-mail
+/close-chronic-boards
+/cv-lifecycle-mail
+/cv-previews
+/discord-register-commands
+/discord-sync
+/email-events
+/embed
+/enrich
+/facetd
+/gen-cities
+/tools/gen-contracts/gen-contracts
+/tools/gen-metros/gen-metros
+/gen-skill-descriptions
+/ghost-crosscheck
+/gmail-sync
+/harvest-ats
+/harvest-boards
+/harvest-erecruiter
+/harvest-linkedin
+/harvest-loxo
+/harvest-orphans
+/harvest-role
+/hire-api
+/hydrate-adzuna-description
+/import-collections
+/import-company-industries
+/import-yc
+/ingest
+/ingest-scheduler
+/limit-nudge-mail
+/linkedin-auth
+/linkedin-token-refresh
+/liveness
+/llm-probe
+/mail-ingest
+/mail-preview
+/mentor-busy-sync
+/mentorship-remind
+/merge-companies
+/message-notify
+/migrate
+/mine-titles
+/notify
+/nudge
+/onboarding
+/pro-welcome-mail
+/prune
+/publish-logo-domains
+/push-receipts
+/quality-audit
+/queue-metrics
+/recount-companies
+/reindex
+/reindex-companies
+/remind
+/report-classify-drift
+/report-company-website-twins
+/report-cv-letters
+/report-geo-gaps
+/report-skill-gaps
+/report-unclassified-titles
+/reslug
+/resolve-url
+/rollup-company
+/rollup-facets
+/rollup-stats
+/rollup-views
+/schedule-board
+/search-drain
+/search-ping
+/search-settings-drift
+/seed-adzuna-description-queue
+/seed-from-inventory
+/serve-probe
+/server
+/set-job-application-url
+/promote-job-source
+/similar-backfill
+/social-digest
+/sweep-tracer-clicks
+/tg-extract
+/tg-ingest
+
+# Local scratch: scraped pages and ad-hoc source dumps used while spiking new
+# adapters. Multi-MB and sometimes carry third-party keys embedded in saved pages —
+# never commit.
+/remoteok.txt
+/workatastartup.html
+/native-boards.md
+/ats_emails.json
+/scratch/
+
+# Environment
+#
+# Default-deny, because the file that leaks is never the one a rule was written for: a copy
+# of .env taken before a risky change (.env.bak.pre-bifrost, .env.old, .env.2026-09-12) holds
+# exactly the same credentials and is named whatever the person was thinking at the time. An
+# allowlist of backup suffixes would only ever cover the shapes somebody already met.
+#
+# The negations name the env files that are meant to be committed — they carry no secrets.
+# Listing one here is the decision to publish it, so a new one must be added deliberately.
+#
+# Each negation is ANCHORED to its full path, for the reason the worker-binary block above
+# records in the other direction: a pattern with no slash in it matches that name at ANY
+# depth. Unanchored, `!.env.example` would also re-admit a `.env.example` nobody has written
+# yet, in a directory nobody has created yet — and `!.env.production` would re-admit a
+# future service's production env, which is the one file in this whole block most likely to
+# hold a live credential. Default-deny only holds if the exceptions cannot spread.
+.env
+.env.*
+!/.env.example
+!/web/.env.example
+!/extension/.env.production
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Agent tooling local state. `.claude/` and `.codex/` are per-machine configuration for
+# the harnesses agents run under — the same class of file as an editor's local settings —
+# and `skills-lock.json` is what they install. None of that belongs in the tree: the
+# shared rules live in AGENTS.md, which IS committed.
+#
+# `.agents/` is deliberately NOT ignored wholesale. It used to be, and the skills under
+# `.agents/skills/` are committed, so the rule shadowed ten tracked files and would have
+# swallowed the next one added beside them — the exact trap the worker-binary block above
+# describes, in the other direction. Local state directly under `.agents/` stays ignored;
+# the tracked subtree is re-admitted because excluding a directory stops git descending
+# into it at all, so `.agents/*` alone would still hide the skills.
+.claude/
+.codex/
+.agents/*
+!.agents/skills/
+skills-lock.json
+
+# Spec Kit — local-only (not part of the freehire tree). Keep on disk for personal
+# workflows; never commit tooling, constitution memory, or generated feature specs.
+.specify/
+# Ignore Cursor local state; keep shared agent rules in the tree.
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+/specs/
+
+# Python
+__pycache__/
+*.pyc
+
+# Superpowers visual brainstorm scratch
+.superpowers/
+
+# Agent scratch: review reports, local run logs, throwaway seed SQL. Deliberately
+# outside git — it is a working directory, not an artifact, and a `git add -A` had
+# already swept a server log and a local seed script into a commit before this line
+# existed.
+.cache/
+
+# Node / Vite / Vitest caches. The frontend lives in web/ with its own
+# .gitignore; these guard against a stray tool run (e.g. vitest) from the repo
+# root leaking a node_modules/.vite cache into the Go project.
+node_modules/
+.vite/
+.svelte-kit/
+
+# extension/ (WXT + Svelte browser extension) generated dirs and release zips
+extension/.wxt/
+extension/.output/
+extension/*.zip
+
+# Local-only compose overrides (per-machine service wiring; never shared).
+/docker-compose.override.yml
+
+# Go / Vitest coverage profiles and HTML (make cover, pnpm test:coverage).
+/coverage/
+/web/coverage/
+
+# Playwright e2e run artifacts (pnpm --dir web run test:e2e).
+/web/test-results/
+.pnpm-store/
+.tmp-containers/
+
+# The model bake-off's profile fixtures: a real CV, a real experience bank. This repository
+# is public and a CV is a name, a phone number, an address and an employment history, so
+# they stay local and are rebuilt from the account they belong to. The postings the bake-off
+# runs against ARE committed — they are already public.
+#
+# The pattern is a PREFIX, not two filenames. Naming each file meant the second one
+# (bakeoff-resume.json) landed untracked-but-visible until somebody noticed, and the next
+# one would too. See internal/api/handler/assistant_bakeoff.go.
+/internal/api/handler/testdata/bakeoff-profile*.json
+/internal/api/handler/testdata/bakeoff-resume*.json
+
+# Local Talent Network demo data (see the catalogue AGENTS.md); not part of the change.
+/seed-talent.sql
+
+# scripts/harvest_boards.py / discover_boards.py --write output: per-provider seed JSON for
+# cmd/harvest-boards, regenerated from the live boards table + whatever aggregator/query ran.
+# Not the catalog's own record (that's `boards`, written by cmd/harvest-boards --apply).
+/scripts/.harvest-seeds/
+
+# Local research notes (competitor scans, market notes) — kept out of the repository.
+/docs/research/
+.schemathesis/
+/sweep-recruiter-contacts

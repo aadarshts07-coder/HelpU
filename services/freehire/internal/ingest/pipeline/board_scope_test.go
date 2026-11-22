@@ -1,0 +1,527 @@
+package pipeline
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/strelov1/freehire/internal/dict/normalize"
+	"github.com/strelov1/freehire/internal/ingest/sources"
+	"golang.org/x/time/rate"
+)
+
+// TestRunReportsQualifyingBoardOnASuccessfulCrawl is the ordinary case the sweep's board
+// scope exists for: a board whose crawl saved something is reported as qualifying.
+func TestRunReportsQualifyingBoardOnASuccessfulCrawl(t *testing.T) {
+	src := fakeSource{provider: "greenhouse", jobs: []sources.Job{{ExternalID: "1", Title: "Backend Engineer"}}}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "greenhouse", Board: "acme"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := boardNames(stats["greenhouse"].QualifyingBoards); !slices.Contains(got, "acme") {
+		t.Errorf("QualifyingBoards = %v, want it to contain %q", got, "acme")
+	}
+}
+
+// TestRunExcludesABoardNameSharedAcrossRegions: the boards catalog allows one board name to
+// exist twice under one provider, distinguished only by region
+// (UNIQUE(provider, lower(board), region) — see internal/ingest/boardcatalog). The
+// board-scoped close's SQL predicate has no region dimension at all (externalid.Namespace
+// does not encode it), so it cannot tell which region's crawl proved coverage. Both regions'
+// crawls succeed and yield here — the failure case (one region's crawl not qualifying) would
+// be even less safe to allow through — so this pins the conservative behavior: a board name
+// spanning more than one region in this run must never enter QualifyingBoards, regardless of
+// how any single region's crawl went.
+func TestRunExcludesABoardNameSharedAcrossRegions(t *testing.T) {
+	src := fakeSource{provider: "lever", jobs: []sources.Job{{ExternalID: "1", Title: "Backend Engineer"}}}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme US", Provider: "lever", Board: "acme", Region: "us"},
+		{Company: "Acme EU", Provider: "lever", Board: "acme", Region: "eu"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := boardNames(stats["lever"].QualifyingBoards); slices.Contains(got, "acme") {
+		t.Errorf("QualifyingBoards = %v, must not contain %q — its region is ambiguous this run", got, "acme")
+	}
+}
+
+// TestRunReportsNoBoardForAZeroYieldCrawl: a board that fetched successfully but returned
+// nothing is indistinguishable from a board whose crawl silently broke, so it must not
+// qualify even though it did not fail.
+func TestRunReportsNoBoardForAZeroYieldCrawl(t *testing.T) {
+	src := fakeSource{provider: "greenhouse", jobs: nil}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "greenhouse", Board: "acme"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := stats["greenhouse"].QualifyingBoards; len(got) != 0 {
+		t.Errorf("QualifyingBoards = %v, want none — a zero-yield crawl cannot be distinguished from a broken one", got)
+	}
+}
+
+// TestRunReportsNoBoardForAFailedCrawl: a board whose fetch errored must not qualify.
+func TestRunReportsNoBoardForAFailedCrawl(t *testing.T) {
+	src := fakeSource{provider: "greenhouse", err: context.DeadlineExceeded}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "greenhouse", Board: "acme"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := stats["greenhouse"].QualifyingBoards; len(got) != 0 {
+		t.Errorf("QualifyingBoards = %v, want none — a failed crawl proves nothing", got)
+	}
+}
+
+// TestRunReportsNoBoardForABoardlessEntry: an entry with no board id has no board scope to
+// speak of — BoardPattern("") would match the provider's whole catalogue.
+func TestRunReportsNoBoardForABoardlessEntry(t *testing.T) {
+	src := fakeSource{provider: "greenhouse", jobs: []sources.Job{{ExternalID: "1", Title: "Backend Engineer"}}}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "greenhouse", Board: ""},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := stats["greenhouse"].QualifyingBoards; len(got) != 0 {
+		t.Errorf("QualifyingBoards = %v, want none for a boardless entry", got)
+	}
+}
+
+// TestRunReportsOnlyBoardsItActuallyCrawled: a run that only entered a subset of a
+// provider's boards (a targeted run, a shard) reports only those as qualifying — a board
+// simply absent from the run's entries can never appear, by construction of RunStats being
+// built entirely from what Run() iterated.
+func TestRunReportsOnlyBoardsItActuallyCrawled(t *testing.T) {
+	src := fakeSource{provider: "greenhouse", jobs: []sources.Job{{ExternalID: "1", Title: "Backend Engineer"}}}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+	// Only "acme" is in this run's entries — "globex" (another board of the same provider)
+	// is not, standing in for a board this run never reached.
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "greenhouse", Board: "acme"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := boardNames(stats["greenhouse"].QualifyingBoards)
+	if !slices.Contains(got, "acme") {
+		t.Errorf("QualifyingBoards = %v, want it to contain the crawled board %q", got, "acme")
+	}
+	if slices.Contains(got, "globex") {
+		t.Errorf("QualifyingBoards = %v, must not contain a board this run never crawled", got)
+	}
+}
+
+// unreadableBoard returns n postings of which unread are marked Unreadable — the shape an ATS
+// adapter yields when a posting's detail request, its ONLY source, could not be read.
+func unreadableBoard(company string, n, unread int) []sources.Job {
+	jobs := make([]sources.Job, 0, n)
+	for i := range n {
+		id := strconv.Itoa(i)
+		if i < unread {
+			jobs = append(jobs, sources.Job{ExternalID: id, Company: company, Unreadable: true})
+			continue
+		}
+		jobs = append(jobs, sources.Job{ExternalID: id, Title: "Backend Engineer", Company: company})
+	}
+	return jobs
+}
+
+// TestRunReportsNoBoardWhenTooMuchOfItWentUnread is the defect this dimension exists for. On
+// the ATS platforms whose detail request is a posting's only source, a detail that failed used
+// to leave the posting simply absent from a crawl that reported Failed=0 and a healthy yield —
+// so both sweeps read a live vacancy as gone and closed it. The run must instead withhold its
+// close scopes for that board: no board scope, and the board's companies out of the company one.
+func TestRunReportsNoBoardWhenTooMuchOfItWentUnread(t *testing.T) {
+	src := fakeSource{provider: "jazzhr", jobs: unreadableBoard("Acme", 2, 1)}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "jazzhr", Board: "acme"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := stats["jazzhr"]
+	if got.Unreadable != 1 || got.Ingested != 1 {
+		t.Fatalf("stats = %+v, want Unreadable=1 Ingested=1 (fixture assumption)", got)
+	}
+	if len(got.QualifyingBoards) != 0 {
+		t.Errorf("QualifyingBoards = %v, want none — half the board went unread", got.QualifyingBoards)
+	}
+	if !slices.Contains(got.UnprovenCompanies, normalize.CompanySlug("Acme")) {
+		t.Errorf("UnprovenCompanies = %v, want it to contain %q so the company-scoped close skips it",
+			got.UnprovenCompanies, normalize.CompanySlug("Acme"))
+	}
+}
+
+// TestRunStillReportsABoardWhoseUnreadShareIsScattered: zero tolerance would switch the close
+// off for exactly the boards it matters most for — per-posting failures are independent, so a
+// large board almost never reads every single posting in one run. One unreadable posting in a
+// hundred is the texture of the web, not a broken crawl.
+func TestRunStillReportsABoardWhoseUnreadShareIsScattered(t *testing.T) {
+	src := fakeSource{provider: "jazzhr", jobs: unreadableBoard("Acme", 100, 1)}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "jazzhr", Board: "acme"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := stats["jazzhr"]
+	if got.Unreadable != 1 {
+		t.Fatalf("stats = %+v, want Unreadable=1 (fixture assumption)", got)
+	}
+	if !slices.Contains(boardNames(got.QualifyingBoards), "acme") {
+		t.Errorf("QualifyingBoards = %v, want it to contain %q — one posting in a hundred is not a broken crawl",
+			got.QualifyingBoards, "acme")
+	}
+	if len(got.UnprovenCompanies) != 0 {
+		t.Errorf("UnprovenCompanies = %v, want none", got.UnprovenCompanies)
+	}
+}
+
+// TestUnreadShareBoundary pins maxUnreadablePercent itself, which the tests either side of it
+// only bracket between 1% and 49%. The figure is argued at length in board_scope.go and it is
+// the whole safety margin of this mechanism: widening it is how a board that has genuinely gone
+// dark starts licensing closes again, and nothing about that reads as a mistake in a diff. So
+// the exact edge is held here rather than inferred — 5 in 100 still proves the board, 6 does
+// not, and moving the constant fails by name.
+func TestUnreadShareBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		unread   int
+		qualifos bool
+	}{
+		{unread: 5, qualifos: true},
+		{unread: 6, qualifos: false},
+	} {
+		t.Run(strconv.Itoa(tc.unread)+"-of-100", func(t *testing.T) {
+			src := fakeSource{provider: "jazzhr", jobs: unreadableBoard("Acme", 100, tc.unread)}
+			r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+			stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+				{Company: "Acme", Provider: "jazzhr", Board: "acme"},
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			got := stats["jazzhr"]
+			if got.Unreadable != tc.unread {
+				t.Fatalf("stats = %+v, want Unreadable=%d (fixture assumption)", got, tc.unread)
+			}
+			if has := slices.Contains(boardNames(got.QualifyingBoards), "acme"); has != tc.qualifos {
+				t.Errorf("board qualifies = %v with %d of 100 unread, want %v — maxUnreadablePercent is %d",
+					has, tc.unread, tc.qualifos, maxUnreadablePercent)
+			}
+		})
+	}
+}
+
+// TestRunReportsNoBoardWhenAlmostNoneOfItCouldBeRead: the other end of the same scale — a board
+// that read 3 of 500 has proved nothing, and must never license a close however clean its
+// listing walk looked.
+func TestRunReportsNoBoardWhenAlmostNoneOfItCouldBeRead(t *testing.T) {
+	src := fakeSource{provider: "jazzhr", jobs: unreadableBoard("Acme", 500, 497)}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "jazzhr", Board: "acme"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := stats["jazzhr"]
+	if got.Ingested != 3 {
+		t.Fatalf("stats = %+v, want Ingested=3 (fixture assumption)", got)
+	}
+	if len(got.QualifyingBoards) != 0 {
+		t.Errorf("QualifyingBoards = %v, want none — the crawl read 3 postings of 500", got.QualifyingBoards)
+	}
+}
+
+// TestRunRecordsWhatAWithheldBoardDidRead: withholding the close must not withhold the WRITE.
+// Everything the crawl managed to read is still saved, so the fix costs latency on a genuine
+// removal and never a posting's freshness.
+func TestRunRecordsWhatAWithheldBoardDidRead(t *testing.T) {
+	store := &fakeStore{}
+	src := fakeSource{provider: "jazzhr", jobs: unreadableBoard("Acme", 2, 1)}
+	r := Runner{Registry: registry(src), Store: store}
+
+	if _, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "jazzhr", Board: "acme"},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(store.saved) != 1 {
+		t.Fatalf("saved %d jobs, want the one posting the crawl could read", len(store.saved))
+	}
+	if got := store.saved[0].Fields().ExternalID; got != "acme:1" {
+		t.Errorf("saved external id = %q, want the readable posting's", got)
+	}
+}
+
+// TestAmbiguousBoardNamesReportsBoardNameAlone: cmd/ingest calls AmbiguousBoardNames on the
+// FULL, unsharded board list before sharding splits it across processes (see its doc comment
+// for why a per-Run() ambiguity check alone cannot catch a region-ambiguous board split across
+// shards). It reports by board name alone since a caller only ever crawls one provider.
+func TestAmbiguousBoardNamesReportsBoardNameAlone(t *testing.T) {
+	entries := []sources.CompanyEntry{
+		{Company: "Acme US", Provider: "workday", Board: "acme", Region: "us"},
+		{Company: "Acme EU", Provider: "workday", Board: "acme", Region: "eu"},
+		{Company: "Globex", Provider: "workday", Board: "globex", Region: "us"},
+	}
+	got := AmbiguousBoardNames(entries, nil)
+	if !got["acme"] {
+		t.Errorf("AmbiguousBoardNames(%v) = %v, want it to contain %q", entries, got, "acme")
+	}
+	if got["globex"] {
+		t.Errorf("AmbiguousBoardNames(%v) = %v, must not contain %q — it has only one region", entries, got, "globex")
+	}
+}
+
+// TestRunReportsNoBoardWhenAStreamDiedMidCrawl is the regression this board scope exists to
+// avoid (see design.md's "the Failed>0 refinement is load-bearing", freehire#725): a streaming
+// board that fails partway through after partial progress is deliberately treated as HEALTHY
+// by BoardHealth (a rate-limited stream must not cool a working board down), but its returned
+// Stats.Failed still carries the failure — and qualification must refuse it on that basis
+// directly, independent of BoardHealth's tolerant verdict. Without this, a stream that died at
+// posting 2 of 3 would license the board-scoped sweep to close everything past the point it
+// died.
+func TestRunReportsNoBoardWhenAStreamDiedMidCrawl(t *testing.T) {
+	src := fakeStreamingSource{provider: "eightfold", failAfter: 2, jobs: []sources.Job{
+		{ExternalID: "1", Title: "Backend Engineer", Company: "Acme"},
+		{ExternalID: "2", Title: "Frontend Engineer", Company: "Acme"},
+		{ExternalID: "3", Title: "Data Engineer", Company: "Acme"},
+	}}
+	health := &fakeHealth{}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}, BoardHealth: health}
+
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{
+		{Company: "Acme", Provider: "eightfold", Board: "acme"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Sanity check on the fixture: BoardHealth must see this as healthy (partial progress),
+	// exactly the case that makes Stats.Failed the only signal left to gate on.
+	if len(health.failures) != 0 {
+		t.Fatalf("board recorded as failed (%v) — fixture must reproduce the tolerant-health case", health.failures)
+	}
+	if got := stats["eightfold"]; got.Failed == 0 {
+		t.Fatalf("stats = %+v, want Failed>0 (fixture assumption: the stream died mid-crawl)", got)
+	}
+	if got := stats["eightfold"].QualifyingBoards; len(got) != 0 {
+		t.Errorf("QualifyingBoards = %v, want none — a board caught mid-crawl must not qualify even though BoardHealth treats it as healthy", got)
+	}
+}
+
+func (s deadlineSource) Provider() string { return s.provider }
+
+// deadlineErrSource fails its fetch with the context's error once the run's context has ended
+// — an adapter whose last request was refused for want of time. started is closed when the
+// fetch begins, so the test ends the context under a fetch that is surely in flight.
+type deadlineErrSource struct {
+	provider string
+	started  chan struct{}
+}
+
+func (s deadlineErrSource) Provider() string { return s.provider }
+
+func (s deadlineErrSource) Fetch(ctx context.Context, _ sources.CompanyEntry) ([]sources.Job, error) {
+	close(s.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// limiterRefusedSource fails its fetch the way a paced adapter does when its rate limiter can
+// already tell that no slot opens before the run's deadline: with the limiter's own error,
+// returned at once while the run's context is still alive.
+type limiterRefusedSource struct{ provider string }
+
+func (s limiterRefusedSource) Provider() string { return s.provider }
+
+func (s limiterRefusedSource) Fetch(ctx context.Context, e sources.CompanyEntry) ([]sources.Job, error) {
+	l := rate.NewLimiter(rate.Every(time.Hour), 1)
+	l.Allow() // spend the only token: the next one is an hour away, past any test deadline
+	if err := l.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("%s: list board %s: %w", s.provider, e.Board, err)
+	}
+	return nil, errors.New("limiter admitted a request an hour early")
+}
+
+// deadlineStreamingSource emits one posting, then holds the stream open until the run's context
+// ends and returns cleanly — a stream that would have gone on emitting had it been given time.
+type deadlineStreamingSource struct{ provider string }
+
+func (s deadlineStreamingSource) Provider() string { return s.provider }
+
+func (s deadlineStreamingSource) Fetch(context.Context, sources.CompanyEntry) ([]sources.Job, error) {
+	return nil, nil
+}
+
+func (s deadlineStreamingSource) FetchStream(ctx context.Context, e sources.CompanyEntry, emit func(sources.Job)) error {
+	emit(sources.Job{ExternalID: "1", Title: "Backend Engineer", Company: e.Company})
+	<-ctx.Done()
+	return nil
+}
+
+// emptyDeadlineSource lists nothing, and for every board but "fast" only once the run's context
+// has ended — an empty answer the deadline may have cut short.
+type emptyDeadlineSource struct{ provider string }
+
+func (s emptyDeadlineSource) Provider() string { return s.provider }
+
+func (s emptyDeadlineSource) Fetch(ctx context.Context, e sources.CompanyEntry) ([]sources.Job, error) {
+	if e.Board != "fast" {
+		<-ctx.Done()
+	}
+	return nil, nil
+}
+
+// TestRunReportsAFinishedEmptyBoard: a board whose crawl finished and whose listing named nothing
+// is the shape of an employer that took every posting down. It never qualifies (an empty answer
+// may be a broken crawl on most adapters), but it is reported apart, so cmd/ingest can admit it
+// to the board scope for an adapter registered as proving an empty answer.
+func TestRunReportsAFinishedEmptyBoard(t *testing.T) {
+	r := Runner{Registry: registry(fakeSource{provider: "greenhouse"}), Store: &fakeStore{}}
+	stats, err := r.Run(context.Background(), []sources.CompanyEntry{{Company: "Acme", Provider: "greenhouse", Board: "acme"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := stats["greenhouse"]
+	if !slices.Equal(boardNames(got.EmptyBoards), []string{"acme"}) {
+		t.Errorf("EmptyBoards = %v, want [acme]", got.EmptyBoards)
+	}
+	if len(got.QualifyingBoards) != 0 {
+		t.Errorf("QualifyingBoards = %v, want none — an empty board is reported apart", got.QualifyingBoards)
+	}
+}
+
+// A board whose listing NAMED postings is not empty, whatever became of them: one whose every
+// posting went unread or failed to save proves nothing at all.
+func TestRunDoesNotReportABoardThatListedSomethingAsEmpty(t *testing.T) {
+	cases := map[string]Runner{
+		"unreadable": {Registry: registry(fakeSource{provider: "greenhouse", jobs: unreadableBoard("Acme", 3, 3)}), Store: &fakeStore{}},
+		"save fails": {Registry: registry(fakeSource{provider: "greenhouse", jobs: []sources.Job{{ExternalID: "1", Title: "Backend Engineer"}}}), Store: &fakeStore{err: errors.New("db down")}},
+	}
+	for name, r := range cases {
+		t.Run(name, func(t *testing.T) {
+			stats, err := r.Run(context.Background(), []sources.CompanyEntry{{Company: "Acme", Provider: "greenhouse", Board: "acme"}})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if got := stats["greenhouse"]; len(got.EmptyBoards) != 0 || len(got.QualifyingBoards) != 0 {
+				t.Errorf("EmptyBoards = %v, QualifyingBoards = %v; want neither", got.EmptyBoards, got.QualifyingBoards)
+			}
+		})
+	}
+}
+
+// A failed crawl, a quiet-paused board, a boardless entry and a region-ambiguous board name are
+// not empty boards: none of them is a finished listing of one board that came back with nothing.
+func TestRunReportsNoEmptyBoardWithoutAFinishedCrawl(t *testing.T) {
+	quiet := &fakeHealth{cooldowns: map[string]time.Time{}, quiet: map[string]time.Time{"greenhouse/acme/": time.Now().Add(time.Hour)}}
+	one := []sources.CompanyEntry{{Company: "Acme", Provider: "greenhouse", Board: "acme"}}
+	cases := []struct {
+		name    string
+		runner  Runner
+		entries []sources.CompanyEntry
+	}{
+		{"failed", Runner{Registry: registry(fakeSource{provider: "greenhouse", err: errors.New("503")}), Store: &fakeStore{}}, one},
+		{"quiet", Runner{Registry: registry(fakeSource{provider: "greenhouse"}), Store: &fakeStore{}, BoardHealth: quiet}, one},
+		{"boardless", Runner{Registry: registry(fakeSource{provider: "greenhouse"}), Store: &fakeStore{}}, []sources.CompanyEntry{{Company: "Acme", Provider: "greenhouse"}}},
+		{"ambiguous region", Runner{Registry: registry(fakeSource{provider: "greenhouse"}), Store: &fakeStore{}}, []sources.CompanyEntry{
+			{Company: "Acme", Provider: "greenhouse", Board: "acme", Region: "us"},
+			{Company: "Acme", Provider: "greenhouse", Board: "acme", Region: "eu"},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stats, err := tc.runner.Run(context.Background(), tc.entries)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if got := stats["greenhouse"].EmptyBoards; len(got) != 0 {
+				t.Errorf("EmptyBoards = %v, want none", got)
+			}
+		})
+	}
+}
+
+// An empty answer that arrived after the run's deadline may be the deadline cutting the listing
+// short, so only the board that finished in time is reported empty.
+func TestRunReportsNoEmptyBoardTheDeadlineCutShort(t *testing.T) {
+	r := Runner{Registry: registry(emptyDeadlineSource{provider: "greenhouse"}), Store: &fakeStore{}}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	stats, _ := r.Run(ctx, []sources.CompanyEntry{
+		{Company: "Fast Co", Provider: "greenhouse", Board: "fast"},
+		{Company: "Slow Co", Provider: "greenhouse", Board: "slow"},
+	})
+	if got := boardNames(stats["greenhouse"].EmptyBoards); !slices.Equal(got, []string{"fast"}) {
+		t.Errorf("EmptyBoards = %v, want [fast]", got)
+	}
+}
+
+// boardNames is refs' board ids, for assertions that do not care about the region.
+func boardNames(refs []BoardRef) []string {
+	names := make([]string, len(refs))
+	for i, r := range refs {
+		names[i] = r.Board
+	}
+	return names
+}
+
+// regionScopedSource is a fake adapter that narrows its boards to a region by posting URL, the
+// way jobstreet does.
+type regionScopedSource struct{ fakeSource }
+
+func (regionScopedSource) BoardURLPrefix(region string) (string, bool) {
+	return "https://" + region + ".example.com/job/", true
+}
+
+// A board id repeated across regions is ambiguous for an ordinary provider — the close cannot
+// tell which region proved coverage — but not for one whose close narrows each board to its
+// region: there every region's finished crawl qualifies its own (board, region).
+func TestRunQualifiesEachRegionOfARegionScopedBoard(t *testing.T) {
+	src := regionScopedSource{fakeSource{provider: "jobstreet", jobs: []sources.Job{{ExternalID: "1", Title: "Backend Engineer"}}}}
+	r := Runner{Registry: registry(src), Store: &fakeStore{}}
+	entries := []sources.CompanyEntry{
+		{Company: "JobStreet SG", Provider: "jobstreet", Board: "6290", Region: "sg"},
+		{Company: "JobStreet MY", Provider: "jobstreet", Board: "6290", Region: "my"},
+	}
+	stats, err := r.Run(context.Background(), entries)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := stats["jobstreet"].QualifyingBoards
+	for _, want := range []BoardRef{{"6290", "sg"}, {"6290", "my"}} {
+		if !slices.Contains(got, want) {
+			t.Errorf("QualifyingBoards = %v, want it to contain %v", got, want)
+		}
+	}
+	if names := AmbiguousBoardNames(entries, registry(src)); len(names) != 0 {
+		t.Errorf("AmbiguousBoardNames = %v, want none for a region-scoped provider", names)
+	}
+}

@@ -1,0 +1,315 @@
+// Command rollup-views is the standalone view-count aggregation worker. It counts job
+// views off the request path from nginx access logs, so a serving request never writes a
+// counter.
+//
+// Each run lists the rotated (non-live) access-log files; for every file not yet applied
+// (tracked by filesystem identity in processed_view_logs) it counts unique daily visitors
+// per job, from the SSR page GET /jobs/<slug> (bot-filtered) and the API read
+// GET /api/v1/jobs/<slug> (not), and applies the per-(day, job) uniques additively into
+// job_daily_views and jobs.view_count. The day comes from each line's timestamp, so a file
+// spanning midnight is bucketed correctly and a day split across two files sums right.
+//
+// Without --backfill only uncompressed rotated files are read; --backfill also reads the
+// older .gz history. The per-file cursor makes re-runs idempotent, and a file is committed
+// in chunks of applyChunkRows, each moving a resume cursor in the same transaction (see
+// applyChunked). With no log dir (local/dev) it is a clean no-op. Run-once-and-exit,
+// cron-scheduled daily, non-zero exit on failure.
+//
+// A second pass reads internal/application/agentview's day files under AGENT_VIEW_LOG_DIR
+// (postings served to agents) into job_daily_views.agent_uniques and jobs.view_count.
+//
+// Last, with MEILI_MASTER_KEY set, it writes the new view_count straight into the search
+// index (pushViewCounts), not through search-drain: it only backs the "Most viewed" sort,
+// so only a job whose count crossed into a new step (viewStep) is written.
+package main
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"hash/fnv"
+	"io"
+	"log"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/strelov1/freehire/internal/application/viewlog"
+	"github.com/strelov1/freehire/internal/platform/db"
+	"github.com/strelov1/freehire/internal/platform/pgerr"
+	"github.com/strelov1/freehire/internal/platform/worker"
+	"github.com/strelov1/freehire/internal/search/search"
+)
+
+func main() { worker.Main(run) }
+
+func run() int {
+	backfill := flag.Bool("backfill", false, "also process older .gz history, not just the recent uncompressed rotated files")
+	flag.Parse()
+
+	ctx, cfg, pool, cleanup, err := worker.Bootstrap(context.Background())
+	if err != nil {
+		log.Printf("database: %v", err)
+		return 1
+	}
+	defer cleanup()
+
+	dir := cmp.Or(os.Getenv("VIEW_LOG_DIR"), "/var/log/nginx")
+	base := cmp.Or(os.Getenv("VIEW_LOG_BASE"), "access.log")
+
+	// A failed nginx pass still fails the run, but only after the agent pass: it fails the
+	// same way on every run, and returning here would hold the agent days back.
+	exit := 0
+	files, err := viewlog.RotatedFiles(dir, base)
+	if !*backfill {
+		files = uncompressed(files)
+	}
+	switch {
+	case err != nil:
+		log.Printf("list logs in %s: %v", dir, err)
+		exit = 1
+	case len(files) == 0:
+		log.Printf("rollup-views: no rotated logs to process in %s", dir)
+	default:
+		done := worker.Stage("nginx logs")
+		nFiles, nViews, err := process(ctx, pool, files)
+		done()
+		reportFiles(nFiles, nViews)
+		if err != nil {
+			log.Printf("process: %v", err)
+			exit = 1
+		} else {
+			log.Printf("rollup-views: processed %d file(s), applied %d view(s)", nFiles, nViews)
+		}
+	}
+
+	// The agent pass is independent of nginx. Unset means the log is not configured.
+	if agentDir := os.Getenv("AGENT_VIEW_LOG_DIR"); agentDir != "" {
+		done := worker.Stage("agent logs")
+		nFiles, nViews, err := processAgent(ctx, pool, agentDir, time.Now())
+		done()
+		reportFiles(nFiles, nViews)
+		if err != nil {
+			log.Printf("agent views: %v", err)
+			exit = 1
+		} else {
+			log.Printf("rollup-views: agent views: processed %d file(s), applied %d view(s)", nFiles, nViews)
+		}
+	}
+
+	// Runs even after a failed pass: the chunks that did commit moved view_count too.
+	// shortcut: a failed push is not retried; those documents keep their old figure until
+	// the job is viewed again or the drain rewrites it. Persist the pending ids if the
+	// "Most viewed" sort ever needs to be exact.
+	if len(viewDeltas) > 0 && cfg.MeiliKey != "" {
+		done := worker.Stage("search view counts")
+		n, err := pushViewCounts(ctx, db.New(pool), search.NewClient(cfg.MeiliURL, cfg.MeiliKey), viewDeltas)
+		done()
+		if err != nil {
+			log.Printf("search view counts: wrote %d, then failed (%d jobs touched): %v", n, len(viewDeltas), err)
+			exit = 1
+		} else {
+			log.Printf("rollup-views: wrote view_count of %d of %d touched job(s) to the search index", n, len(viewDeltas))
+		}
+	}
+	return exit
+}
+
+// reportFiles reports this pass in files, the unit both figures share: every file read,
+// and all of them as changed only if the pass applied any view. Reading logs and applying
+// nothing is the case worth seeing.
+func reportFiles(nFiles, nViews int) {
+	changed := 0
+	if nViews > 0 {
+		changed = nFiles
+	}
+	worker.ReportWork(int64(nFiles), int64(changed))
+}
+
+// process applies every not-yet-processed file, skipping those already in the
+// cursor. It returns how many files it applied and the total views added.
+func process(ctx context.Context, pool *pgxpool.Pool, files []viewlog.LogFile) (nFiles, nViews int, err error) {
+	q := db.New(pool)
+	for _, f := range files {
+		counts, sig, err := aggregateFile(f)
+		if err != nil {
+			return nFiles, nViews, err
+		}
+		done, err := q.IsViewLogFileProcessed(ctx, sig)
+		if err != nil {
+			return nFiles, nViews, err
+		}
+		if done {
+			continue
+		}
+		applied, err := applyFile(ctx, pool, q, f, counts, sig)
+		if errors.Is(err, errAlreadyApplied) {
+			continue
+		}
+		if err != nil {
+			return nFiles, nViews, err
+		}
+		nFiles++
+		nViews += applied
+	}
+	return nFiles, nViews, nil
+}
+
+// deadlockRetries is how many times a chunk's apply is re-attempted after a deadlock
+// abort. Small on purpose: if three tries lose, something other than ordinary contention
+// is wrong and the run should say so.
+const deadlockRetries = 3
+
+// applyWithRetry runs apply, one chunk's all-or-nothing transaction, re-attempting it when
+// PostgreSQL aborts it to break a deadlock. name labels the file in the log and error.
+// Both passes go through it.
+//
+// The chunk's counts and the file cursor's move commit together, so an aborted attempt
+// leaves no partial state and a retry cannot double-count. Treating 40P01 as fatal once
+// stopped the view rollup silently.
+func applyWithRetry(ctx context.Context, name string, apply func() error) error {
+	var err error
+	for attempt := 1; attempt <= deadlockRetries; attempt++ {
+		if err = apply(); err == nil {
+			return nil
+		}
+		if !pgerr.IsDeadlock(err) {
+			return err
+		}
+		log.Printf("rollup-views: %s: deadlock on attempt %d/%d, retrying: %v",
+			name, attempt, deadlockRetries, err)
+
+		// Back off with jitter: the writer we lost to is likely an ingest run in this slot,
+		// and an instant retry would re-enter the same cycle.
+		delay := time.Duration(attempt) * 2 * time.Second
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay + time.Duration(rand.Int64N(int64(time.Second)))):
+		}
+	}
+	return fmt.Errorf("apply %s: still deadlocking after %d attempts: %w",
+		name, deadlockRetries, err)
+}
+
+// aggregateFile opens a rotated file, aggregates its views, and computes the cursor
+// signature (FNV-64 over the decompressed content) in the same pass. The signature
+// is stable across rename and gzip, so a re-run recognizes an already-applied file.
+func aggregateFile(f viewlog.LogFile) (map[string]map[string]viewlog.Counts, int64, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rc.Close()
+	h := fnv.New64a()
+	counts, err := viewlog.Aggregate(io.TeeReader(rc, h))
+	if err != nil {
+		return nil, 0, err
+	}
+	return counts, int64(h.Sum64()), nil
+}
+
+// applyFile applies one file's already-aggregated counts in chunks and then marks the
+// file processed (see applyChunked). It returns the views this run applied. A file with
+// no resolvable views is still marked, so it is not rescanned.
+func applyFile(ctx context.Context, pool *pgxpool.Pool, q *db.Queries, f viewlog.LogFile, counts map[string]map[string]viewlog.Counts, sig int64) (int, error) {
+	ids, err := resolveSlugs(ctx, q, counts)
+	if err != nil {
+		return 0, err
+	}
+	params, err := buildParams(counts, ids)
+	if err != nil {
+		return 0, err
+	}
+	return applyChunked(ctx, pool, q, sig, filepath.Base(f.Path), params,
+		func(p db.ApplyDailyViewParams) viewKey { return viewKey{jobID: p.JobID, day: p.Day} },
+		// The reported figure is the total, which is what jobs.view_count accrues.
+		func(p db.ApplyDailyViewParams) int { return int(p.TotalDelta) },
+		func(ctx context.Context, qtx *db.Queries, chunk []db.ApplyDailyViewParams) error {
+			return execBatch(qtx.ApplyDailyView(ctx, chunk))
+		})
+}
+
+// buildParams turns a file's aggregated counts into the batch, in a deterministic order,
+// and reports the total views it carries. Slugs that resolve to no job are dropped.
+//
+// The ORDER is load-bearing. counts is a map of maps and Go randomises map iteration, so
+// an unordered batch takes row locks on up to hundreds of thousands of `jobs` rows in a
+// random order beside concurrent ingest writers: a lock cycle (40P01). Ascending job id
+// gives one stable order, so two of this worker's batches cannot deadlock each other and
+// against another writer an overlap becomes a wait rather than a cycle.
+func buildParams(counts map[string]map[string]viewlog.Counts, ids map[string]int64) ([]db.ApplyDailyViewParams, error) {
+	var params []db.ApplyDailyViewParams
+	for day, perSlug := range counts {
+		d, err := time.Parse("2006-01-02", day)
+		if err != nil {
+			return nil, err
+		}
+		for slug, c := range perSlug {
+			id, ok := ids[slug]
+			if !ok {
+				continue
+			}
+			params = append(params, db.ApplyDailyViewParams{
+				Day:        pgtype.Date{Time: d, Valid: true},
+				JobID:      id,
+				TotalDelta: int32(c.Total),
+				PageDelta:  int32(c.Page),
+			})
+		}
+	}
+
+	sort.Slice(params, func(i, j int) bool {
+		if params[i].JobID != params[j].JobID {
+			return params[i].JobID < params[j].JobID
+		}
+		return params[i].Day.Time.Before(params[j].Day.Time)
+	})
+	return params, nil
+}
+
+// resolveSlugs maps every slug appearing in counts to its job id in one query.
+func resolveSlugs(ctx context.Context, q *db.Queries, counts map[string]map[string]viewlog.Counts) (map[string]int64, error) {
+	set := make(map[string]struct{})
+	for _, perSlug := range counts {
+		for slug := range perSlug {
+			set[slug] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return nil, nil
+	}
+	slugs := make([]string, 0, len(set))
+	for slug := range set {
+		slugs = append(slugs, slug)
+	}
+	rows, err := q.ResolveSlugsToJobIDs(ctx, slugs)
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		ids[r.PublicSlug] = r.ID
+	}
+	return ids, nil
+}
+
+// uncompressed drops the .gz history, leaving the recent rotated files for a light
+// daily run.
+func uncompressed(files []viewlog.LogFile) []viewlog.LogFile {
+	out := files[:0:0]
+	for _, f := range files {
+		if !strings.HasSuffix(f.Path, ".gz") {
+			out = append(out, f)
+		}
+	}
+	return out
+}

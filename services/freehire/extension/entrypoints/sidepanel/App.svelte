@@ -1,0 +1,604 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { browser } from 'wxt/browser';
+  import { type RuntimeMessage } from '../../lib/protocol';
+  import { createSession, getSession, SessionNotFound } from '../../lib/assistant/api';
+  import { sendTurn, type Turn } from '../../lib/assistant/client';
+  import { PlanRefused } from '../../lib/planRefused';
+  import { initChat, reduceTurnEvent, type ChatState } from '../../lib/assistant/chat';
+  import { eventsFromTranscript } from '../../lib/assistant/wire';
+  import { recallSession, rememberSession, forgetSession } from '../../lib/assistant/session';
+  import { createConversationRestore } from '../../lib/assistant/conversationRestore';
+  import { pageIdentity, readStablePageKey } from '../../lib/assistant/pageIdentity';
+  import { track } from '../../lib/analytics';
+  import { signIn, signOut, getToken, fetchMe, type HireUser } from '../../lib/auth';
+  import { type FreehireJob } from '../../lib/freehire';
+  import { normalizeLabel } from '../../lib/fieldKeys';
+  import { leftAnApplication, type PlanItem } from '../../lib/applyPlan';
+  import type { WalkHooks } from '../../lib/formWalk';
+  import { agentAutofill, saveChosenAnswers, type FillPanel } from '../../lib/formFill';
+  import { ToolChannel } from '../../lib/tools/client';
+  import { activeTabPage } from '../../lib/tools/page';
+  import { FormPlan } from './formPlan.svelte';
+  import { PageMatch } from './pageMatch.svelte';
+  import { answersToOffer, type AnswerOffer } from '../../lib/answerOffer';
+  import ChatPanel from './ChatPanel.svelte';
+  import MatchTab from './MatchTab.svelte';
+  import PanelHeader from './PanelHeader.svelte';
+  import { TabStrip, tabStripId } from 'freehire-design-system';
+
+  let chat = $state<ChatState>(initChat());
+  // Local action feedback (autofill results, errors) — not part of a turn.
+  let notices = $state<string[]>([]);
+  let draft = $state('');
+  let sending = $state(false);
+  let chatError = $state('');
+  // The plan said no (402): shown as a paywall with the upgrade link instead of an
+  // error line, since retrying would only repeat the same refusal.
+  let planRefusal = $state<PlanRefused | null>(null);
+  // The same refusal for agent autofill. Kept apart from the chat's: each is cleared by
+  // its own surface's next attempt, and one tab must not show the other's paywall.
+  let autofillRefusal = $state<PlanRefused | null>(null);
+  let restoring = $state(false);
+
+  // The conversation this panel is holding, and the turn in flight if there is
+  // one. Plain refs: neither is rendered directly.
+  let sessionId: string | null = null;
+  let turn: Turn | null = null;
+
+  // The page the CURRENT conversation is about (see `pageIdentity`). A job posting's
+  // chat has no reason to carry over to a different page — there is nothing left
+  // to continue — so this is compared against the active tab on every tab switch
+  // and reload, and a mismatch resets the conversation instead of resuming it.
+  // Null until the first page is known.
+  let chatPageKey: string | null = null;
+
+  let user = $state<HireUser | null>(null);
+  let authBusy = $state(false);
+  let authError = $state('');
+  let authGeneration = 0;
+  let pageRequestId = 0;
+
+  const conversationRestore = createConversationRestore({
+    recall: recallSession,
+    load: async (id, token) => (await getSession(id, token)).messages,
+    canAdopt: () => sessionId === null && !sending,
+    adopt: (id, messages) => {
+      sessionId = id;
+      for (const event of eventsFromTranscript(messages)) {
+        chat = reduceTurnEvent(chat, event);
+      }
+    },
+    loading: (value) => {
+      restoring = value;
+    },
+    error: async (err) => {
+      if (err instanceof SessionNotFound) {
+        await forgetSession();
+      } else {
+        chatError = `Could not load your conversation: ${err instanceof Error ? err.message : 'error'}`;
+      }
+    },
+  });
+
+  // The browser-tool wire: while the panel is open this holds the socket the
+  // agent drives this browser through. It lives here rather than in the service
+  // worker because only the panel stays alive.
+  const tools = new ToolChannel(activeTabPage, (status) => {
+    if (status === 'unreachable') {
+      notices.push('Could not connect the browsing tools — try signing out and back in.');
+    }
+  });
+
+  const pageMatch = new PageMatch((notice) => notices.push(notice));
+
+  // "Match" carries the current page's job info and its page-scoped actions
+  // (Autofill, Add to freehire); "Chat" carries the conversation. Split into tabs
+  // because the chat transcript needs the whole panel height to itself to scroll
+  // — sharing it with the match card left too little room to reach the composer.
+  const PANEL_ID = 'sidepanel-panel';
+  let activeTab = $state<'match' | 'chat'>('match');
+
+  onMount(() => {
+    track('panel_open');
+    // The conversation is created lazily on the first message, so an idle panel
+    // starts nothing; a conversation held earlier is repainted here.
+    void restoreSession();
+
+    // Re-run the match when the user switches tabs or a page finishes loading,
+    // so the card tracks whatever job page is in front — like the reference.
+    // The same event is what notices a genuine page change for the chat: see
+    // `handlePageChange`.
+    const refresh = () => {
+      if (user) void handlePageChange();
+      else pageRequestId++;
+    };
+    browser.tabs.onActivated.addListener(refresh);
+    const onUpdated = (_id: number, info: { status?: string }) => {
+      if (info.status === 'complete') refresh();
+    };
+    browser.tabs.onUpdated.addListener(onUpdated);
+
+    // An answer the user types on the page themselves has to move the panel's
+    // counter, or the plan reports the form as less finished than it is. The page
+    // says only that something changed (debounced there); the plan is rebuilt from
+    // a fresh read, which is the one account that cannot drift.
+    const onPageMessage = (message: RuntimeMessage) => {
+      if (message.kind === 'FORM_CHANGED') void refreshPlan();
+    };
+    browser.runtime.onMessage.addListener(onPageMessage);
+
+    // The panel regaining focus is the other moment worth re-reading on: the user
+    // has just been on the page, quite possibly answering a question there.
+    const onFocus = () => {
+      if (user) void refreshPlan();
+      else pageRequestId++;
+    };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      authGeneration++;
+      pageRequestId++;
+      conversationRestore.invalidate();
+      turn?.cancel();
+      tools.stop();
+      browser.tabs.onActivated.removeListener(refresh);
+      browser.tabs.onUpdated.removeListener(onUpdated);
+      browser.runtime.onMessage.removeListener(onPageMessage);
+      window.removeEventListener('focus', onFocus);
+    };
+  });
+
+  async function currentPageKey(): Promise<string> {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    return pageIdentity(tab?.url ?? '');
+  }
+
+  /**
+   * Runs on every tab switch and page load. A genuine change of page clears
+   * whatever conversation is on screen — there is nothing on the new page for it
+   * to continue — before the match card is refreshed for the new page. The very
+   * first call (chatPageKey still null) only establishes the baseline; there is
+   * nothing yet to reset it against.
+   *
+   * The clear is local only (`resetChat`, not `newChat`): the page just left
+   * might still have a perfectly good remembered conversation, and switching
+   * away from it is not the user asking to discard it — only the Reset button
+   * and sign-out are. Immediately after, the new page's OWN remembered
+   * conversation (if any) is offered the normal restore path, so tabbing A → B →
+   * A resumes A's conversation rather than finding it erased.
+   */
+  async function handlePageChange() {
+    const requestId = ++pageRequestId;
+    const auth = authGeneration;
+    const key = await currentPageKey();
+    if (requestId !== pageRequestId || auth !== authGeneration || !user) return;
+    form.formFilled = false;
+    form.autofilled.clear();
+    if (chatPageKey !== null && key !== chatPageKey) {
+      resetChat();
+      chatPageKey = key;
+      // The helper owns this pending read under the conversation's lifetime;
+      // another refresh of the same page must not invalidate its credentials.
+      void restoreConversation(getToken(), key);
+    }
+    chatPageKey = key;
+    void pageMatch.load();
+    void refreshPlan();
+  }
+
+  async function restoreSession() {
+    const auth = ++authGeneration;
+    const token = await getToken();
+    if (auth !== authGeneration || !token) return;
+    const restoredUser = await fetchMe(token);
+    if (auth !== authGeneration || !restoredUser) return;
+    const current = conversationRestore.capture();
+    const key = await readStablePageKey(
+      currentPageKey,
+      () => pageRequestId,
+      () => auth === authGeneration && current(),
+    );
+    if (key === null || auth !== authGeneration || !current()) return;
+    chatPageKey = key;
+    // Publishing the account unlocks page refreshes and the composer, so its
+    // initial conversation page must already be known.
+    user = restoredUser;
+    tools.start(token);
+    void pageMatch.load();
+    void refreshPlan();
+    void restoreConversation(token, key);
+  }
+
+  /**
+   * Repaint the conversation this panel was holding. The transcript is replayed
+   * through the same reducer a live turn folds through, so history and a running
+   * turn cannot render differently.
+   *
+   * A remembered conversation about a different page is not repainted here — it
+   * is simply not what this page's chat should show — but it is left in storage
+   * rather than forgotten: it is exactly right for whatever page it WAS about,
+   * and staying there is what lets tabbing back to that page resume it.
+   *
+   * A conversation the server no longer has (deleted from the web) is not an error
+   * the user can act on from here — forget it and let the next message start a
+   * fresh one.
+   */
+  async function restoreConversation(token: string | Promise<string | null>, key: string) {
+    await conversationRestore.run(token, key);
+  }
+
+  async function handleSignIn() {
+    const auth = ++authGeneration;
+    resetChat();
+    authBusy = true;
+    authError = '';
+    try {
+      const token = await signIn();
+      if (auth !== authGeneration) return;
+      const signedInUser = await fetchMe(token);
+      if (auth !== authGeneration) return;
+      if (!signedInUser) authError = 'Signed in, but could not load your account.';
+      else {
+        const current = conversationRestore.capture();
+        const key = await readStablePageKey(
+          currentPageKey,
+          () => pageRequestId,
+          () => auth === authGeneration && current(),
+        );
+        if (key === null || auth !== authGeneration || !current()) return;
+        chatPageKey = key;
+        user = signedInUser;
+        track('sign_in');
+        tools.start(token);
+        void pageMatch.load();
+        void refreshPlan();
+      }
+    } catch (err) {
+      if (auth === authGeneration) authError = err instanceof Error ? err.message : 'Sign-in failed';
+    } finally {
+      if (auth === authGeneration) authBusy = false;
+    }
+  }
+
+  async function handleSignOut() {
+    const auth = ++authGeneration;
+    pageRequestId++;
+    resetChat();
+    user = null;
+    authBusy = true;
+    // Detach the wire too: it is authenticated as the user who just left.
+    tools.stop();
+    // No page is "current" while signed out — re-established by restoreSession
+    // or handleSignIn on the next sign-in, same as on first mount.
+    chatPageKey = null;
+    try {
+      await signOut();
+      await forgetSession();
+    } finally {
+      if (auth === authGeneration) authBusy = false;
+    }
+  }
+
+  /**
+   * Run one turn. A turn is a single POST whose response body streams the events,
+   * so there is nothing to connect, attach to, or lease. Stop asks the server to
+   * cancel the work separately from aborting this reader.
+   *
+   * The user's own message is NOT painted optimistically: the backend emits
+   * `user_prompt` as the turn's first frame, before the first model call, so the
+   * reducer paints it just as fast and there is no echo to suppress.
+   */
+  async function dispatch(text: string) {
+    if (sending) return;
+    conversationRestore.invalidate();
+    const current = conversationRestore.capture();
+    // Claim the turn synchronously — before the first await — so a second action
+    // during `getToken()` queues out via the guard instead of double-dispatching.
+    sending = true;
+    chatError = '';
+    planRefusal = null;
+    const token = await getToken();
+    if (!current()) return;
+    if (!token) {
+      sending = false;
+      chatError = 'Sign in to chat with the agent.';
+      return;
+    }
+    try {
+      if (!sessionId) {
+        const key = chatPageKey ?? (await currentPageKey());
+        if (!current()) return;
+        const created = await createSession(token);
+        if (!current()) return;
+        sessionId = created.id;
+        await rememberSession(sessionId, key);
+        if (!current()) return;
+        chatPageKey = key;
+      }
+      turn = sendTurn(sessionId, text, token, (event) => {
+        if (current()) chat = reduceTurnEvent(chat, event);
+      });
+      await turn.done;
+      track('assistant_message');
+    } catch (err) {
+      if (!current()) return;
+      // An aborted fetch is the Stop button, not a failure: the stream may drop
+      // before the response headers arrive, which lands here rather than in the
+      // client's own abort path.
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        chat = reduceTurnEvent(chat, { type: 'result', stop_reason: 'cancelled' });
+      } else if (err instanceof PlanRefused) {
+        // The turn never started, so there is no assistant message to close.
+        planRefusal = err;
+        track('plan_refused', { feature: err.feature, upgrade_offered: err.upgradeUrl !== null });
+      } else {
+        chatError = err instanceof Error ? err.message : 'Could not reach the agent.';
+        // Close the open message. Without this the turn keeps its `streaming`
+        // flag: the dots pulse forever and the deck skeletons never resolve, so a
+        // dead connection reads as an agent still working.
+        chat = reduceTurnEvent(chat, { type: 'result', stop_reason: 'error', is_error: true });
+      }
+    } finally {
+      if (current()) {
+        turn = null;
+        sending = false;
+      }
+    }
+  }
+
+  /** Stop a turn in flight. The client answers with a `cancelled` result, so the
+   *  transcript still ends properly rather than trailing off. */
+  function stopTurn() {
+    turn?.cancel();
+  }
+
+  /** Clears what the panel is showing, without touching the remembered session in
+   *  storage — used where the underlying conversation may still be worth keeping
+   *  (a page change; see `handlePageChange`). `newChat` below is the same clear
+   *  plus the deliberate forget. */
+  function resetChat() {
+    conversationRestore.invalidate();
+    if (sending) stopTurn();
+    turn = null;
+    sending = false;
+    sessionId = null;
+    chat = initChat();
+    notices = [];
+    chatError = '';
+    planRefusal = null;
+  }
+
+  /** Start over — the Reset button. The old conversation stays on the server — it
+   *  is in the web's session rail — so this forgets the panel's local pointer to
+   *  it rather than deleting it. chatPageKey is left as-is: the button does not
+   *  navigate anywhere, so the current page is still the current page. */
+  async function newChat() {
+    resetChat();
+    await forgetSession();
+  }
+
+  function sendMessage() {
+    const text = draft.trim();
+    if (!text || sending) return;
+    draft = '';
+    void dispatch(text);
+  }
+
+  let autofilling = $state(false);
+
+  // The application-form plan (see FormPlan). Every read is followed by
+  // noteApplication, which tracks the started application across reads.
+  const form = new FormPlan(() => noteApplication());
+
+  let savingAnswers = $state(false);
+  /** The catalog job whose application form is in front of the user, started. */
+  let startedJob: FreehireJob | null = null;
+  /** The catalog job whose started application gave way to a page with no form — the one
+   *  the "did you submit?" prompt names. Kept until answered. */
+  let appliedCandidate = $state<FreehireJob | null>(null);
+  /** Asked only once the page in front of the user shows no form: the next step of a
+   *  multi-step application is still the application, not its end. */
+  let asksApplied = $derived(appliedCandidate !== null && !form.plan && !autofilling);
+  let answerOffers = $derived(autofilling ? [] : answersToOffer(form.formFields, form.autofilled));
+
+  /** Reads the page's form and rebuilds the plan (signed in only). */
+  async function refreshPlan() {
+    if (!user) return;
+    await form.refresh();
+  }
+
+  /**
+   * Follows the application through form reads rather than page events: a full navigation
+   * and a single-page ATS replacing its form with a thank-you both end the same way — a
+   * read that finds no form after one that found a started application. Page events
+   * cannot see the second, and race the page's own change notice on the first.
+   */
+  function noteApplication() {
+    if (leftAnApplication(form.plan)) {
+      if (pageMatch.job?.public_slug) startedJob = pageMatch.job;
+      return;
+    }
+    if (!form.plan && startedJob) {
+      appliedCandidate = startedJob;
+      startedJob = null;
+    }
+  }
+
+  /** Sends the user to one question: the page scrolls there and takes the cursor. */
+  async function revealItem(item: PlanItem) {
+    const reply = (await browser.runtime.sendMessage({
+      kind: 'REVEAL_FIELD',
+      request: { label: item.label, frame: item.frame, form: item.form, focus: true },
+    } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
+    if (reply?.kind === 'REVEAL_RESULT' && !reply.found) {
+      notices.push(`"${item.label}" is no longer on this page — the form may have moved on.`);
+    }
+  }
+
+  /** Set while a walk runs, so Stop can end it between steps. */
+  let walkStop = $state(false);
+
+  // What the walks in lib/formWalk report back to this panel.
+  const walkHooks: WalkHooks = {
+    filling: (label) => (form.fillingLabel = label),
+    stopped: () => walkStop,
+    wrote: () => (form.formFilled = true),
+    answered: (label, frame, formIndex) => form.tickOff(label, frame, formIndex),
+  };
+  // What the fallback filler in lib/formFill reports back to this panel.
+  const fillPanel: FillPanel = {
+    notice: (text) => notices.push(text),
+    offerOverride: (run) => (overrideFill = run),
+    walk: walkHooks,
+    refreshPlan: () => refreshPlan(),
+    known: (label) => form.autofilled.add(normalizeLabel(label)),
+    refused: (err) => (autofillRefusal = err),
+  };
+
+  async function autofill() {
+    const token = await getToken();
+    if (!token || autofilling) return;
+    autofilling = true;
+    walkStop = false;
+    autofillRefusal = null;
+    try {
+      await agentAutofill(token, fillPanel);
+    } finally {
+      autofilling = false;
+    }
+  }
+
+  /**
+   * The fill the user has been offered but not yet confirmed, because the page
+   * does not look like it is showing an application form. Held so "Fill anyway"
+   * runs the same pass rather than re-reading a page that may have moved on.
+   */
+  let overrideFill = $state<(() => Promise<void>) | null>(null);
+
+  async function saveAnswers(chosen: AnswerOffer[]) {
+    const token = await getToken();
+    if (!token || savingAnswers) return;
+    savingAnswers = true;
+    try {
+      await saveChosenAnswers(chosen, token, {
+        notice: (text) => notices.push(text),
+        saved: (question) => form.autofilled.add(normalizeLabel(question)),
+      });
+    } finally {
+      savingAnswers = false;
+    }
+  }
+
+  async function runOverrideFill() {
+    const run = overrideFill;
+    if (!run || autofilling) return;
+    overrideFill = null;
+    autofilling = true;
+    try {
+      await run();
+    } finally {
+      autofilling = false;
+    }
+  }
+</script>
+
+<div class="app">
+  <PanelHeader {user} {sending} {authBusy} {authError} onSignIn={handleSignIn} onSignOut={handleSignOut} />
+
+  <TabStrip
+    class="tab-strip"
+    tabs={[
+      { id: 'match', label: 'Match' },
+      { id: 'chat', label: 'Chat' },
+    ]}
+    active={activeTab}
+    onSelect={(id) => {
+      activeTab = id;
+      // Coming back to Match is a moment the user expects the panel to be current:
+      // the form may have moved on (a step, an expanded Apply) while they were in
+      // the chat, and nothing else would have told us.
+      if (id === 'match') void refreshPlan();
+    }}
+    label="Panel sections"
+    panelId={PANEL_ID}
+  />
+
+  <div class="tab-panel" role="tabpanel" id={PANEL_ID} aria-labelledby={tabStripId(PANEL_ID, activeTab)}>
+    {#if activeTab === 'match'}
+      <MatchTab
+        {user}
+        {pageMatch}
+        {form}
+        {notices}
+        {asksApplied}
+        bind:appliedCandidate
+        {autofilling}
+        bind:walkStop
+        {answerOffers}
+        {savingAnswers}
+        {autofillRefusal}
+        hasOverrideFill={overrideFill !== null}
+        onNotice={(text) => notices.push(text)}
+        onReveal={revealItem}
+        onSave={saveAnswers}
+        onOverrideFill={runOverrideFill}
+        onAutofill={autofill}
+      />
+    {:else}
+      <ChatPanel
+        {user}
+        {chat}
+        {chatError}
+        {planRefusal}
+        {restoring}
+        {sending}
+        bind:draft
+        onReset={newChat}
+        onSend={sendMessage}
+        onStop={stopTurn}
+      />
+    {/if}
+  </div>
+</div>
+
+<style>
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    font-size: 14px;
+  }
+
+  /* :global — `class="tab-strip"` is forwarded onto TabStrip's own root element,
+   * which carries that component's scoping hash, not App.svelte's; a scoped
+   * selector here would silently match nothing, which is exactly what dropped
+   * the strip's inset. */
+  :global(.tab-strip) {
+    padding: 0 12px;
+    flex-shrink: 0;
+  }
+
+  /* The panel that actually has to fill the space between the tab strip and the
+   * viewport's bottom edge — min-height: 0 overrides a flex item's default of
+   * shrinking no further than its content, which is what silently broke internal
+   * scrolling here: without it this item grew to fit the transcript instead of
+   * scrolling it, pushing the composer off screen. */
+  /* min-height AND min-width: 0 override a flex item's default of never
+   * shrinking below its content's intrinsic size, in either axis. The height
+   * half is what made the chat transcript scroll instead of pushing the
+   * composer off-screen (see .messages below); the width half is the same bug
+   * sideways — some un-wrapped child (a badge row, a long value) can otherwise
+   * inflate this column wider than the viewport, and everything sized against
+   * it with `width: 100%` — including the Autofill button — inflates to match
+   * and then gets silently clipped at .app's own edge, which reads as "no
+   * padding" even though the padding below is real. */
+  .tab-panel {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+</style>

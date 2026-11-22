@@ -1,0 +1,589 @@
+package cv
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/strelov1/freehire/internal/candidate/resumeextract"
+	"github.com/strelov1/freehire/internal/platform/db"
+	"github.com/strelov1/freehire/internal/platform/pgconv"
+	"github.com/strelov1/freehire/internal/platform/pgerr"
+)
+
+// ErrNotFound is returned when a CV id is missing or owned by another user. The handler
+// maps it to 404 (owner isolation never leaks the existence of a foreign CV).
+var ErrNotFound = errors.New("cv: not found")
+
+// ErrNoResume is returned by Tailor when the user has neither a base CV nor an extracted
+// résumé to seed one from. The handler maps it to 409 (add a résumé first).
+var ErrNoResume = errors.New("cv: no résumé to seed a base CV")
+
+// ErrNotBase is returned when an operation that only makes sense for a base CV (choosing it to
+// tailor from, duplicating it) is pointed at a tailored copy. The handler maps it to 409.
+var ErrNotBase = errors.New("cv: not a base CV")
+
+// Meta is a CV without its document body — the shape the list and mutation responses use.
+type Meta struct {
+	// ID is a random UUID, not a counter: a countable id would publish how many CVs exist
+	// and make a forgotten owner check enumerable.
+	ID         uuid.UUID
+	Title      string
+	TemplateID string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// Record is a CV with its full document body.
+type Record struct {
+	Meta
+	// JobID is the vacancy a tailored CV is bound to, or 0 — for a base CV, and also for a
+	// tailored copy whose vacancy was pruned (the FK nulls the link). IsTailored is what tells
+	// those two apart.
+	JobID int64
+	// IsTailored records what the row was CREATED as. It does not follow JobID: a pruned vacancy
+	// takes the link away but leaves the copy a tailored copy.
+	IsTailored bool
+	// AgentSessionID is the roy session bound to a tailored CV (empty when none).
+	AgentSessionID string
+	// TracerLinksEnabled is the candidate's consent for this CV's links to be traced.
+	TracerLinksEnabled bool
+	// CompanySlug is the vacancy's company, used as the tracer token's readable prefix. Empty
+	// for a base CV and for a tailored copy whose vacancy was pruned.
+	CompanySlug string
+	Document    Document
+	// BaseCVID is the base a tailored copy was made from; zero for a base CV, for copies made
+	// before the column existed, and once that base was deleted. BaseFor is the reader that
+	// turns it into a base with the fallback applied.
+	BaseCVID uuid.UUID
+	// HandEdited records that the candidate changed this CV through the editor. The automatic
+	// stale-vs-upload refresh leaves such a base alone.
+	HandEdited bool
+	// AutopilotReport is the last unattended run's account of itself, one entry per
+	// requirement it considered. Empty when no run has happened (or the last was reverted).
+	AutopilotReport []AutopilotEntry
+}
+
+// TailoredItem is a tailored CV in the re-open list: metadata plus the vacancy (slug, title,
+// company) and the bound agent session, so a row renders as a company card that links straight
+// back to its tailoring workspace.
+type TailoredItem struct {
+	Meta
+	JobSlug        string
+	JobTitle       string
+	JobCompany     string
+	AgentSessionID string
+}
+
+// BaseItem is a base CV in the picker/list: metadata plus whether it is the default base (the
+// one used wherever a single base is needed without asking).
+type BaseItem struct {
+	Meta
+	IsDefault  bool
+	HandEdited bool
+}
+
+// Repository persists CVs. Every read/update/delete is owner-scoped by (id, userID); a
+// foreign or missing id yields pgx.ErrNoRows (Get) or a zero delete count.
+// It deliberately has NO method that writes a CV's document: internal/candidate/cvedit owns
+// that, and one here would bypass revisions, policy and the evidence gate.
+type Repository interface {
+	Create(ctx context.Context, userID int64, title, templateID string, data []byte) (db.CreateCVRow, error)
+	List(ctx context.Context, userID int64) ([]db.ListCVsByUserRow, error)
+	Get(ctx context.Context, id uuid.UUID, userID int64) (db.GetCVByIDRow, error)
+	Delete(ctx context.Context, id uuid.UUID, userID int64) (int64, error)
+	GetBase(ctx context.Context, userID int64) (db.GetBaseCVByUserRow, error)
+	ListBases(ctx context.Context, userID int64) ([]db.ListBaseCVsByUserRow, error)
+	// Duplicate copies an owned base CV under a new title; pgx.ErrNoRows for a foreign, missing
+	// or tailored id.
+	Duplicate(ctx context.Context, id uuid.UUID, userID int64, title string) (db.DuplicateBaseCVRow, error)
+	// CreateTailored records baseID (uuid.Nil for none) as the base the copy was made from.
+	CreateTailored(ctx context.Context, userID, jobID int64, baseID uuid.UUID, title, templateID string, data []byte) (db.CreateTailoredCVRow, error)
+	SetSession(ctx context.Context, id uuid.UUID, userID int64, sessionID string) (int64, error)
+	SetTracerLinks(ctx context.Context, id uuid.UUID, userID int64, enabled bool) (int64, error)
+	ListTailored(ctx context.Context, userID int64) ([]db.ListTailoredCVsByUserRow, error)
+	SetAutopilotReport(ctx context.Context, id uuid.UUID, userID int64, report []byte) (int64, error)
+	// MergeAutopilotEntry folds one requirement's outcome into the run report in a single
+	// statement; see MergeCVAutopilotEntry for why it cannot be a Get then a SetAutopilotReport.
+	MergeAutopilotEntry(ctx context.Context, id uuid.UUID, userID int64, entry []byte) (int64, error)
+	GetTailoredForJob(ctx context.Context, userID, jobID int64) (db.GetTailoredCVForJobRow, error)
+	// GetAppearanceDefaults returns pgx.ErrNoRows when the user has never saved any —
+	// distinct from a user who saved values equal to the system defaults.
+	GetAppearanceDefaults(ctx context.Context, userID int64) (db.CvAppearanceDefault, error)
+	// UpsertAppearanceDefaults replaces the user's appearance defaults wholesale (there is
+	// exactly one row per user).
+	UpsertAppearanceDefaults(ctx context.Context, userID int64, templateID string, style, margins []byte) (db.CvAppearanceDefault, error)
+}
+
+// Seeder provides the user's extracted résumé, used to seed a base CV when they have none.
+type Seeder interface {
+	Structured(ctx context.Context, userID int64) (resumeextract.Structured, bool, error)
+}
+
+// Store is the CV persistence service: it sanitizes and (de)serializes documents around
+// the owner-scoped Repository. It holds no rendering concern.
+type Store struct {
+	repo Repository
+}
+
+// NewStore builds the service over an owner-scoped repository.
+func NewStore(repo Repository) *Store { return &Store{repo: repo} }
+
+// Create sanitizes and stores a new CV, returning its metadata.
+func (s *Store) Create(ctx context.Context, userID int64, title, templateID string, doc Document) (Meta, error) {
+	data, err := marshalSanitized(doc)
+	if err != nil {
+		return Meta{}, err
+	}
+	row, err := s.repo.Create(ctx, userID, title, templateID, data)
+	if err != nil {
+		return Meta{}, err
+	}
+	return Meta{ID: row.ID, Title: row.Title, TemplateID: row.TemplateID,
+		CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time}, nil
+}
+
+// List returns the user's CVs as metadata, newest edit first.
+func (s *Store) List(ctx context.Context, userID int64) ([]Meta, error) {
+	rows, err := s.repo.List(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Meta, len(rows))
+	for i, r := range rows {
+		out[i] = Meta{ID: r.ID, Title: r.Title, TemplateID: r.TemplateID,
+			CreatedAt: r.CreatedAt.Time, UpdatedAt: r.UpdatedAt.Time}
+	}
+	return out, nil
+}
+
+// Get returns one owned CV with its document, or ErrNotFound.
+func (s *Store) Get(ctx context.Context, id uuid.UUID, userID int64) (Record, error) {
+	row, err := s.repo.Get(ctx, id, userID)
+	if err != nil {
+		return Record{}, mapNotFound(err)
+	}
+	return recordFromRow(row)
+}
+
+func recordFromRow(row db.GetCVByIDRow) (Record, error) {
+	doc, err := unmarshalDocument(row.Data)
+	if err != nil {
+		return Record{}, err
+	}
+	return Record{
+		Meta:               Meta{ID: row.ID, Title: row.Title, TemplateID: row.TemplateID, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time},
+		JobID:              int8Value(row.JobID),
+		IsTailored:         row.IsTailored,
+		AgentSessionID:     textValue(row.AgentSessionID),
+		TracerLinksEnabled: row.TracerLinksEnabled,
+		CompanySlug:        row.CompanySlug,
+		Document:           doc,
+		AutopilotReport:    decodeAutopilotReport(row.AutopilotReport),
+		BaseCVID:           row.BaseCvID.Bytes,
+		HandEdited:         row.HandEdited,
+	}, nil
+}
+
+// GetForModel returns one owned CV with the contact block stripped, for every reader
+// that puts the document in front of a model.
+//
+// It is a separate accessor, not a flag on Get, because the rule is about who is READING,
+// not how the request arrived (an in-process assistant carries no API key). Get stays for the
+// owner's full-fidelity reads (the editor, the PDF render).
+func (s *Store) GetForModel(ctx context.Context, id uuid.UUID, userID int64) (Record, error) {
+	rec, err := s.Get(ctx, id, userID)
+	if err != nil {
+		return Record{}, err
+	}
+	rec.Document = rec.Document.withoutContacts()
+	return rec, nil
+}
+
+// int8Value unwraps a nullable bigint to its value, mapping NULL to 0.
+func int8Value(v pgtype.Int8) int64 {
+	if v.Valid {
+		return v.Int64
+	}
+	return 0
+}
+
+// textValue unwraps a nullable text column to its value, mapping NULL to "".
+func textValue(v pgtype.Text) string {
+	if v.Valid {
+		return v.String
+	}
+	return ""
+}
+
+// SetSession binds (or rebinds) the agent session to an owned CV, or returns ErrNotFound.
+func (s *Store) SetSession(ctx context.Context, id uuid.UUID, userID int64, sessionID string) error {
+	n, err := s.repo.SetSession(ctx, id, userID, sessionID)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetTracerLinks turns link tracing on or off for one CV. Owner-scoped: a foreign or missing id
+// is ErrNotFound.
+//
+// It writes the column directly, not through cvedit: a cvedit write becomes a revision with an
+// inverse, and consent to track a third party must not be grantable or revocable by an undo.
+func (s *Store) SetTracerLinks(ctx context.Context, id uuid.UUID, userID int64, enabled bool) error {
+	n, err := s.repo.SetTracerLinks(ctx, id, userID, enabled)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListTailored returns the user's tailored CVs (the re-open list): metadata plus the vacancy
+// slug and the bound agent session, newest edit first.
+func (s *Store) ListTailored(ctx context.Context, userID int64) ([]TailoredItem, error) {
+	rows, err := s.repo.ListTailored(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TailoredItem, len(rows))
+	for i, r := range rows {
+		out[i] = TailoredItem{
+			Meta:           Meta{ID: r.ID, Title: r.Title, TemplateID: r.TemplateID, CreatedAt: r.CreatedAt.Time, UpdatedAt: r.UpdatedAt.Time},
+			JobSlug:        r.JobSlug,
+			JobTitle:       r.JobTitle,
+			JobCompany:     r.JobCompany,
+			AgentSessionID: textValue(r.AgentSessionID),
+		}
+	}
+	return out, nil
+}
+
+// Delete removes an owned CV, or returns ErrNotFound when nothing matched.
+func (s *Store) Delete(ctx context.Context, id uuid.UUID, userID int64) error {
+	n, err := s.repo.Delete(ctx, id, userID)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// BaseCV returns the user's DEFAULT base CV with its document; ok is false when the user has
+// only tailored CVs or none at all. The default is the base their newest tailored copy was made
+// from, else their oldest base (see GetBaseCVByUser) — never "the last one edited", so editing a
+// base cannot change which one tailoring uses.
+func (s *Store) BaseCV(ctx context.Context, userID int64) (Record, bool, error) {
+	row, err := s.repo.GetBase(ctx, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Record{}, false, nil
+		}
+		return Record{}, false, err
+	}
+	doc, err := unmarshalDocument(row.Data)
+	if err != nil {
+		return Record{}, false, err
+	}
+	return Record{
+		Meta:       Meta{ID: row.ID, Title: row.Title, TemplateID: row.TemplateID, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time},
+		Document:   doc,
+		HandEdited: row.HandEdited,
+	}, true, nil
+}
+
+// BaseByID returns one owned base CV, ErrNotFound for a foreign or missing id, ErrNotBase for a
+// tailored copy.
+func (s *Store) BaseByID(ctx context.Context, id uuid.UUID, userID int64) (Record, error) {
+	rec, err := s.Get(ctx, id, userID)
+	if err != nil {
+		return Record{}, err
+	}
+	if rec.IsTailored {
+		return Record{}, ErrNotBase
+	}
+	return rec, nil
+}
+
+// BaseOrDefault returns the base named by id, or the default base when id is uuid.Nil. A named
+// base is validated like BaseByID (ErrNotFound, ErrNotBase); ok is false only when no id was
+// given and the user has no base at all.
+func (s *Store) BaseOrDefault(ctx context.Context, userID int64, id uuid.UUID) (Record, bool, error) {
+	if id == uuid.Nil {
+		return s.BaseCV(ctx, userID)
+	}
+	rec, err := s.BaseByID(ctx, id, userID)
+	return rec, err == nil, err
+}
+
+// BaseFor returns the base a tailored copy was made from, falling back to the default base when
+// the copy predates the column or its base was deleted. ok is false only when the user has no
+// base at all.
+func (s *Store) BaseFor(ctx context.Context, userID int64, tailored Record) (Record, bool, error) {
+	if tailored.BaseCVID != uuid.Nil {
+		base, err := s.BaseByID(ctx, tailored.BaseCVID, userID)
+		if err == nil {
+			return base, true, nil
+		}
+		if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrNotBase) {
+			return Record{}, false, err
+		}
+	}
+	return s.BaseCV(ctx, userID)
+}
+
+// Bases lists the user's base CVs, oldest created first, flagging the default.
+func (s *Store) Bases(ctx context.Context, userID int64) ([]BaseItem, error) {
+	rows, err := s.repo.ListBases(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BaseItem, len(rows))
+	for i, r := range rows {
+		out[i] = BaseItem{
+			Meta:       Meta{ID: r.ID, Title: r.Title, TemplateID: r.TemplateID, CreatedAt: r.CreatedAt.Time, UpdatedAt: r.UpdatedAt.Time},
+			IsDefault:  r.IsDefault,
+			HandEdited: r.HandEdited,
+		}
+	}
+	return out, nil
+}
+
+// Duplicate copies an owned base CV — its stored, already-sanitized document, template and
+// hand-edited flag — under title. ErrNotFound for a foreign or missing id, ErrNotBase for a
+// tailored copy.
+func (s *Store) Duplicate(ctx context.Context, id uuid.UUID, userID int64, title string) (Meta, error) {
+	if _, err := s.BaseByID(ctx, id, userID); err != nil {
+		return Meta{}, err
+	}
+	row, err := s.repo.Duplicate(ctx, id, userID, title)
+	if err != nil {
+		return Meta{}, mapNotFound(err)
+	}
+	return Meta{ID: row.ID, Title: row.Title, TemplateID: row.TemplateID,
+		CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time}, nil
+}
+
+// CreateTailored sanitizes and stores a vacancy-bound (job_id) copy of a document with no
+// recorded base. Tailor is the production path and records one.
+func (s *Store) CreateTailored(ctx context.Context, userID, jobID int64, title, templateID string, doc Document) (Meta, error) {
+	return s.createTailored(ctx, userID, jobID, uuid.Nil, title, templateID, doc)
+}
+
+func (s *Store) createTailored(ctx context.Context, userID, jobID int64, baseID uuid.UUID, title, templateID string, doc Document) (Meta, error) {
+	data, err := marshalSanitized(doc)
+	if err != nil {
+		return Meta{}, err
+	}
+	row, err := s.repo.CreateTailored(ctx, userID, jobID, baseID, title, templateID, data)
+	if err != nil {
+		return Meta{}, err
+	}
+	return Meta{ID: row.ID, Title: row.Title, TemplateID: row.TemplateID,
+		CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time}, nil
+}
+
+// Tailor ensures the user has a base CV — seeding one from their extracted résumé when they
+// have none — then creates a vacancy-bound tailored copy of it. baseID names the base to copy
+// (ErrNotFound for a foreign or missing id, ErrNotBase for a tailored one); uuid.Nil means the
+// default base. preferred is the vacancy's
+// skilltag.PreferredFromText map; when non-empty the copy is surface-aligned before insert
+// so the stored document never held the unaligned wording. It returns the base and tailored
+// metadata plus whether THIS call is the one that just created the tailored copy (false when an
+// existing one was reused instead). It returns ErrNoResume when there is nothing to seed a base
+// from. The base CV is never modified: tailoring only ever writes the new tailored row.
+func (s *Store) Tailor(ctx context.Context, userID, jobID int64, baseID uuid.UUID, tailoredTitle string, seeder Seeder, preferred map[string]string) (Meta, Meta, bool, error) {
+	base, ok, err := s.BaseOrDefault(ctx, userID, baseID)
+	if err != nil {
+		return Meta{}, Meta{}, false, err
+	}
+	if !ok {
+		st, hasResume, err := seeder.Structured(ctx, userID)
+		if err != nil {
+			return Meta{}, Meta{}, false, err
+		}
+		if !hasResume {
+			return Meta{}, Meta{}, false, ErrNoResume
+		}
+		defaults, _, err := s.GetAppearanceDefaults(ctx, userID)
+		if err != nil {
+			return Meta{}, Meta{}, false, err
+		}
+		doc := Seed(st)
+		doc.Style = defaults.Style
+		doc.Margins = defaults.Margins
+		meta, err := s.Create(ctx, userID, defaultBaseTitle, defaults.TemplateID, doc)
+		if err != nil {
+			return Meta{}, Meta{}, false, err
+		}
+		base = Record{Meta: meta, Document: doc}
+	}
+	// One tailored copy per vacancy: the workspace address carries no CV reference, so a reload
+	// re-runs this request, and a second copy would orphan the candidate's conversation.
+	if existing, err := s.TailoredForJob(ctx, userID, jobID); err == nil {
+		return s.existingCopyBase(ctx, userID, base, existing), existing, false, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return Meta{}, Meta{}, false, err
+	}
+
+	doc, _ := Align(base.Document, preferred)
+	tailored, err := s.createTailored(ctx, userID, jobID, base.ID, tailoredTitle, base.TemplateID, doc)
+	if err != nil {
+		// A concurrent call can win the insert; cvs_user_id_job_id_tailored_uniq_idx turns the
+		// loser into a unique violation. Return the winner's copy.
+		if pgerr.IsUniqueViolation(err) {
+			existing, ferr := s.TailoredForJob(ctx, userID, jobID)
+			if ferr != nil {
+				return Meta{}, Meta{}, false, ferr
+			}
+			return s.existingCopyBase(ctx, userID, base, existing), existing, false, nil
+		}
+		return Meta{}, Meta{}, false, err
+	}
+	return base.Meta, tailored, true, nil
+}
+
+// existingCopyBase is the base to report alongside an already-existing tailored copy: its own
+// base when still there, else the one this call resolved. Reopening with a different base
+// returns the same copy, which must not be reported as derived from the newly picked base.
+func (s *Store) existingCopyBase(ctx context.Context, userID int64, resolved Record, existing Meta) Meta {
+	rec, err := s.Get(ctx, existing.ID, userID)
+	if err != nil {
+		return resolved.Meta
+	}
+	if own, ok, err := s.BaseFor(ctx, userID, rec); err == nil && ok {
+		return own.Meta
+	}
+	return resolved.Meta
+}
+
+// TailoredForJob returns the user's existing tailored copy for a vacancy, or ErrNotFound.
+// A vacancy has at most one: Tailor returns the existing copy rather than making another.
+func (s *Store) TailoredForJob(ctx context.Context, userID, jobID int64) (Meta, error) {
+	row, err := s.repo.GetTailoredForJob(ctx, userID, jobID)
+	if err != nil {
+		return Meta{}, mapNotFound(err)
+	}
+	return Meta{
+		ID: row.ID, Title: row.Title, TemplateID: row.TemplateID,
+		CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time,
+	}, nil
+}
+
+// defaultBaseTitle names a base CV seeded from the résumé (the user can rename it later).
+const defaultBaseTitle = "My CV"
+
+func marshalSanitized(doc Document) ([]byte, error) {
+	doc.Sanitize()
+	return json.Marshal(doc)
+}
+
+func unmarshalDocument(data []byte) (Document, error) {
+	var doc Document
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return Document{}, err
+	}
+	return doc, nil
+}
+
+func mapNotFound(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
+// --- db-backed repository ---
+
+type queriesRepository struct{ q *db.Queries }
+
+// NewQueriesRepository adapts the generated *db.Queries to the owner-scoped Repository.
+func NewQueriesRepository(q *db.Queries) Repository { return queriesRepository{q: q} }
+
+func (r queriesRepository) Create(ctx context.Context, userID int64, title, templateID string, data []byte) (db.CreateCVRow, error) {
+	return r.q.CreateCV(ctx, db.CreateCVParams{UserID: userID, Title: title, TemplateID: templateID, Data: data})
+}
+
+func (r queriesRepository) List(ctx context.Context, userID int64) ([]db.ListCVsByUserRow, error) {
+	return r.q.ListCVsByUser(ctx, userID)
+}
+
+func (r queriesRepository) Get(ctx context.Context, id uuid.UUID, userID int64) (db.GetCVByIDRow, error) {
+	return r.q.GetCVByID(ctx, db.GetCVByIDParams{ID: id, UserID: userID})
+}
+
+func (r queriesRepository) Delete(ctx context.Context, id uuid.UUID, userID int64) (int64, error) {
+	return r.q.DeleteCV(ctx, db.DeleteCVParams{ID: id, UserID: userID})
+}
+
+func (r queriesRepository) GetBase(ctx context.Context, userID int64) (db.GetBaseCVByUserRow, error) {
+	return r.q.GetBaseCVByUser(ctx, userID)
+}
+
+func (r queriesRepository) ListBases(ctx context.Context, userID int64) ([]db.ListBaseCVsByUserRow, error) {
+	return r.q.ListBaseCVsByUser(ctx, userID)
+}
+
+func (r queriesRepository) Duplicate(ctx context.Context, id uuid.UUID, userID int64, title string) (db.DuplicateBaseCVRow, error) {
+	return r.q.DuplicateBaseCV(ctx, db.DuplicateBaseCVParams{ID: id, UserID: userID, Title: title})
+}
+
+func (r queriesRepository) CreateTailored(ctx context.Context, userID, jobID int64, baseID uuid.UUID, title, templateID string, data []byte) (db.CreateTailoredCVRow, error) {
+	return r.q.CreateTailoredCV(ctx, db.CreateTailoredCVParams{
+		UserID: userID, Title: title, TemplateID: templateID, Data: data,
+		JobID:    pgtype.Int8{Int64: jobID, Valid: true},
+		BaseCvID: pgtype.UUID{Bytes: baseID, Valid: baseID != uuid.Nil},
+	})
+}
+
+func (r queriesRepository) SetSession(ctx context.Context, id uuid.UUID, userID int64, sessionID string) (int64, error) {
+	return r.q.SetCVSession(ctx, db.SetCVSessionParams{
+		ID: id, UserID: userID,
+		AgentSessionID: pgconv.Text(sessionID),
+	})
+}
+
+func (r queriesRepository) SetTracerLinks(ctx context.Context, id uuid.UUID, userID int64, enabled bool) (int64, error) {
+	return r.q.SetCVTracerLinks(ctx, db.SetCVTracerLinksParams{ID: id, UserID: userID, TracerLinksEnabled: enabled})
+}
+
+func (r queriesRepository) ListTailored(ctx context.Context, userID int64) ([]db.ListTailoredCVsByUserRow, error) {
+	return r.q.ListTailoredCVsByUser(ctx, userID)
+}
+
+func (r queriesRepository) SetAutopilotReport(ctx context.Context, id uuid.UUID, userID int64, report []byte) (int64, error) {
+	return r.q.SetCVAutopilotReport(ctx, db.SetCVAutopilotReportParams{ID: id, UserID: userID, AutopilotReport: report})
+}
+
+func (r queriesRepository) MergeAutopilotEntry(ctx context.Context, id uuid.UUID, userID int64, entry []byte) (int64, error) {
+	return r.q.MergeCVAutopilotEntry(ctx, db.MergeCVAutopilotEntryParams{ID: id, UserID: userID, Entry: entry})
+}
+
+func (r queriesRepository) GetTailoredForJob(ctx context.Context, userID, jobID int64) (db.GetTailoredCVForJobRow, error) {
+	return r.q.GetTailoredCVForJob(ctx, db.GetTailoredCVForJobParams{
+		UserID: userID, JobID: pgtype.Int8{Int64: jobID, Valid: true},
+	})
+}
+
+func (r queriesRepository) GetAppearanceDefaults(ctx context.Context, userID int64) (db.CvAppearanceDefault, error) {
+	return r.q.GetCVAppearanceDefaults(ctx, userID)
+}
+
+func (r queriesRepository) UpsertAppearanceDefaults(ctx context.Context, userID int64, templateID string, style, margins []byte) (db.CvAppearanceDefault, error) {
+	return r.q.UpsertCVAppearanceDefaults(ctx, db.UpsertCVAppearanceDefaultsParams{
+		UserID: userID, TemplateID: templateID, Style: style, Margins: margins,
+	})
+}

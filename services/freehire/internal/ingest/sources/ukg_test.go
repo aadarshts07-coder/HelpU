@@ -1,0 +1,249 @@
+package sources
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
+
+// UKG earns fullBoardListing because list() proves completeness: totalCount is authoritative
+// (the loop pages until skip >= totalCount or an empty page), no artificial page cap exists,
+// and any listing error aborts the whole Fetch rather than returning what was collected so
+// far as a success.
+func TestUKGMarkers(t *testing.T) {
+	s := NewUKG(nil)
+	if _, ok := s.(fullBoardListing); !ok {
+		t.Error("ukg should implement the fullBoardListing marker")
+	}
+}
+
+func TestUKGRegisteredAsFullBoardListing(t *testing.T) {
+	if !FullBoardListingProviders(All(nil))["ukg"] {
+		t.Error("FullBoardListingProviders(All(nil)) should include ukg")
+	}
+}
+
+// A listing fetch failure must abort the whole Fetch, never return a partial result as
+// success — the property TestUKGMarkers' fullBoardListing claim rests on.
+func TestUKGFetchPropagatesAListingError(t *testing.T) {
+	fake := &fakeHTTP{err: errors.New("boom")}
+	if _, err := NewUKG(fake).Fetch(context.Background(), CompanyEntry{Board: "recruiting.ultipro.com/acme/guid"}); err == nil {
+		t.Fatal("Fetch succeeded despite a listing error")
+	}
+}
+
+func TestSplitUKGBoard(t *testing.T) {
+	cases := []struct {
+		board               string
+		wantOK              bool
+		host, tenant, guid_ string
+	}{
+		{"recruiting.ultipro.com/van5000vcscu/a46cbdaa-ca2c", true, "recruiting.ultipro.com", "van5000vcscu", "a46cbdaa-ca2c"},
+		{"recruiting.ultipro.ca/bur5000burn/3fa0ebc6", true, "recruiting.ultipro.ca", "bur5000burn", "3fa0ebc6"},
+		{"tenant/guid", false, "", "", ""},            // missing host
+		{"host/tenant/guid/extra", false, "", "", ""}, // too many parts
+		{"host//guid", false, "", "", ""},             // empty tenant
+		{"", false, "", "", ""},                       // empty
+	}
+	for _, tc := range cases {
+		host, tenant, guid, ok := splitUKGBoard(tc.board)
+		if ok != tc.wantOK || host != tc.host || tenant != tc.tenant || guid != tc.guid_ {
+			t.Errorf("splitUKGBoard(%q) = (%q,%q,%q,%v), want (%q,%q,%q,%v)",
+				tc.board, host, tenant, guid, ok, tc.host, tc.tenant, tc.guid_, tc.wantOK)
+		}
+	}
+}
+
+func TestUKGLocation(t *testing.T) {
+	structured := ukgOpportunity{Locations: []ukgLocation{{
+		LocalizedName: "Vancity Centre",
+		Address: &struct {
+			City  string `json:"City"`
+			State *struct {
+				Name string `json:"Name"`
+			} `json:"State"`
+			Country *struct {
+				Name string `json:"Name"`
+			} `json:"Country"`
+		}{
+			City: "Vancouver",
+			State: &struct {
+				Name string `json:"Name"`
+			}{Name: "British Columbia"},
+			Country: &struct {
+				Name string `json:"Name"`
+			}{Name: "Canada"},
+		},
+	}}}
+	if got := structured.location(); got != "Vancouver, British Columbia, Canada" {
+		t.Errorf("structured location = %q", got)
+	}
+
+	// No structured address → fall back to the localized label.
+	labelOnly := ukgOpportunity{Locations: []ukgLocation{{LocalizedName: "Remote - US"}}}
+	if got := labelOnly.location(); got != "Remote - US" {
+		t.Errorf("label-only location = %q", got)
+	}
+
+	// No locations → empty.
+	if got := (ukgOpportunity{}).location(); got != "" {
+		t.Errorf("no-location = %q, want empty", got)
+	}
+}
+
+// ukgDetailHTML builds an OpportunityDetail page that bootstraps the opportunity model as
+// the JSON argument of a CandidateOpportunityDetail(...) call, the shape the adapter parses.
+func ukgDetailHTML(description string) string {
+	return `<html><head></head><body>` +
+		`<script>var opportunity = new US.Opportunity.CandidateOpportunityDetail(` +
+		`{"Id":"x","Title":"t","FullTime":true,"Description":"` + description + `"});</script>` +
+		`</body></html>`
+}
+
+func TestUKGFetch(t *testing.T) {
+	listing := `{"totalCount":2,"opportunities":[
+		{"Id":"id-1","Title":"Backend Engineer","PostedDate":"2026-06-19T22:12:06.752Z","BriefDescription":"brief one",
+		 "Locations":[{"LocalizedName":"Vancity Centre","Address":{"City":"Vancouver","State":{"Name":"British Columbia"},"Country":{"Name":"Canada"}}}]},
+		{"Id":"id-2","Title":"Data Analyst","PostedDate":"2026-06-18T00:00:00Z","BriefDescription":"brief two",
+		 "Locations":[{"LocalizedName":"Remote - US"}]}
+	]}`
+	http := (&routedHTTP{}).
+		route("/JobBoardView/LoadSearchResults", listing).
+		route("/OpportunityDetail", ukgDetailHTML("<p>Full body</p>"))
+
+	jobs, err := ukg{http: http}.Fetch(context.Background(),
+		CompanyEntry{Company: "Acme", Board: "recruiting.ultipro.com/van5000vcscu/the-guid"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("got %d jobs, want 2", len(jobs))
+	}
+
+	j := jobs[0]
+	if j.ExternalID != "id-1" || j.Title != "Backend Engineer" {
+		t.Errorf("job0 id/title = %q/%q", j.ExternalID, j.Title)
+	}
+	if j.Company != "Acme" {
+		t.Errorf("job0 Company = %q, want %q", j.Company, "Acme")
+	}
+	if want := "recruiting.ultipro.com/van5000vcscu/JobBoard/the-guid/OpportunityDetail"; !strings.Contains(j.URL, want) || !strings.Contains(j.URL, "opportunityId=id-1") {
+		t.Errorf("job0 URL = %q", j.URL)
+	}
+	if j.Location != "Vancouver, British Columbia, Canada" {
+		t.Errorf("job0 location = %q", j.Location)
+	}
+	// The detail page upgrades the brief body to the full description.
+	if !strings.Contains(j.Description, "Full body") {
+		t.Errorf("job0 description = %q, want full body", j.Description)
+	}
+	// The detail page's FullTime flag maps to the structured employment type.
+	if j.EmploymentType != "full_time" {
+		t.Errorf("job0 EmploymentType = %q, want full_time (from FullTime:true)", j.EmploymentType)
+	}
+	if j.PostedAt == nil {
+		t.Errorf("job0 PostedAt is nil")
+	}
+	// Second job's label-only location and remote inference.
+	if jobs[1].Location != "Remote - US" || !jobs[1].Remote {
+		t.Errorf("job1 location/remote = %q/%v", jobs[1].Location, jobs[1].Remote)
+	}
+}
+
+// When the detail page is unreachable, the listing's brief description is retained rather
+// than dropping the job.
+func TestUKGFetchBriefFallback(t *testing.T) {
+	listing := `{"totalCount":1,"opportunities":[
+		{"Id":"id-1","Title":"Backend Engineer","BriefDescription":"the brief body","Locations":[]}
+	]}`
+	http := (&routedHTTP{}).route("/JobBoardView/LoadSearchResults", listing) // no detail route → GetHTML errors
+
+	jobs, err := ukg{http: http}.Fetch(context.Background(),
+		CompanyEntry{Board: "recruiting.ultipro.com/t/g"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(jobs) != 1 || !strings.Contains(jobs[0].Description, "the brief body") {
+		t.Fatalf("want 1 job with brief body, got %+v", jobs)
+	}
+}
+
+func TestUKGFetchBadBoard(t *testing.T) {
+	if _, err := (ukg{http: &routedHTTP{}}).Fetch(context.Background(), CompanyEntry{Board: "bad"}); err == nil {
+		t.Errorf("want error for malformed board")
+	}
+}
+
+// JobLocationType is UKG Pro's structured workplace enum, carried on every listing record. Its
+// meaning is the platform's own: the job board's bundle labels it through
+// "Common.JobLocationType_<n>" and maps the same keys to LinkedIn's workplace types — 0 Hybrid,
+// 1 On-site, 2 Remote. null (the tenant left it unset) states nothing. The records are trimmed
+// from live boards (cap1009capge, ald1001aldii; 2026-10-30).
+func TestUKGFetchReadsJobLocationType(t *testing.T) {
+	listing := `{"totalCount":4,"opportunities":[
+		{"Id":"h","Title":"Engineering and Solution Architecture Support","Locations":[{"LocalizedName":"San Antonio, TX, 78201"}],"JobLocationType":0,"OpportunityType":0},
+		{"Id":"o","Title":"Part-Time Store Cashier/Stocker","Locations":[{"LocalizedName":"12351 S Orange Blossom Trl"}],"JobLocationType":1,"OpportunityType":0},
+		{"Id":"r","Title":"Identity Governance and Administration (IGA) Engineer","Locations":[{"LocalizedName":"San Antonio, TX, 78201"}],"JobLocationType":2,"OpportunityType":0},
+		{"Id":"n","Title":"Part-Time Store Associate/Cashier/Stocker","Locations":[{"LocalizedName":"Friendswood, 3100 FM-528"}],"JobLocationType":null,"OpportunityType":0}
+	]}`
+	http := (&routedHTTP{}).route("/JobBoardView/LoadSearchResults", listing)
+
+	jobs, err := ukg{http: http}.Fetch(context.Background(), CompanyEntry{Board: "recruiting.ultipro.com/t/g"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	want := map[string]string{"h": "hybrid", "o": "onsite", "r": "remote", "n": ""}
+	if len(jobs) != len(want) {
+		t.Fatalf("got %d jobs, want %d", len(jobs), len(want))
+	}
+	for _, j := range jobs {
+		if j.WorkMode != want[j.ExternalID] {
+			t.Errorf("%s: WorkMode = %q, want %q", j.ExternalID, j.WorkMode, want[j.ExternalID])
+		}
+		// The remote flag follows the structured value, not only a "Remote" location label.
+		if j.Remote != (want[j.ExternalID] == "remote") {
+			t.Errorf("%s: Remote = %v", j.ExternalID, j.Remote)
+		}
+	}
+}
+
+func TestUKGFetchNewHydratesOnlyDueIDs(t *testing.T) {
+	fake := (&routedHTTP{}).
+		route("LoadSearchResults", `{"totalCount":2,"opportunities":[{"Id":"known","Title":"Stored title"},{"Id":"due","Title":"Edited role"}]}`).
+		route("OpportunityDetail", ukgDetailHTML("<p>Edited full body</p>"))
+	src, ok := NewUKG(fake).(HydratingSource)
+	if !ok {
+		t.Fatal("UKG must implement HydratingSource")
+	}
+	jobs, err := src.FetchNew(context.Background(), CompanyEntry{Board: "host/tenant/guid"}, func(id string) bool { return id == "known" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.calls != 2 {
+		t.Fatalf("requests = %d, want listing + due detail", fake.calls)
+	}
+	if len(jobs) != 2 || !jobs[0].SeenRefresh || jobs[0].Title != "Stored title" || jobs[0].Description != "" || !strings.Contains(jobs[1].Description, "Edited full body") {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+	// A body-refresh-due ID is absent from the pipeline's seen set on the next call.
+	jobs, err = src.FetchNew(context.Background(), CompanyEntry{Board: "host/tenant/guid"}, func(string) bool { return false })
+	if err != nil || jobs[0].SeenRefresh || !strings.Contains(jobs[0].Description, "Edited full body") {
+		t.Fatalf("body refresh = %+v, %v", jobs, err)
+	}
+}
+
+func TestUKGFetchNewUnreadableProtection(t *testing.T) {
+	fake := (&routedHTTP{}).
+		route("LoadSearchResults", `{"totalCount":3,"opportunities":[{"Id":"known"},{"Id":"good"},{"Id":"bad","BriefDescription":"A brief must not replace a stored full body"}]}`).
+		route("opportunityId=good", ukgDetailHTML("full body"))
+	src := NewUKG(fake).(HydratingSource)
+	jobs, err := src.FetchNew(context.Background(), CompanyEntry{Board: "host/t/g"}, func(id string) bool { return id == "known" })
+	if err != nil || len(jobs) != 3 || !jobs[2].Unreadable || jobs[2].SeenRefresh {
+		t.Fatalf("partial = %+v, %v", jobs, err)
+	}
+	_, err = src.FetchNew(context.Background(), CompanyEntry{Board: "host/t/g"}, func(id string) bool { return id != "bad" })
+	if err == nil {
+		t.Fatal("all requested details unreadable must fail even with known refreshes")
+	}
+}

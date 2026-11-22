@@ -1,0 +1,288 @@
+# Company identity
+
+How the catalogue decides that two postings name the same employer.
+
+## Scope
+
+The company slug (`jobs.company_slug`, `companies.slug`) and the registry that keeps two
+spellings of one employer from becoming two companies. Not company *data* — see
+[company-facets](company-facets.md), [internal/dict/companyname](../../internal/dict/companyname/AGENTS.md)
+for display names, and [internal/job/collections](../../internal/job/collections/AGENTS.md) for tags.
+
+## Always true
+
+- **`normalize.CompanySlug` is the company key, and `normalize.Slug` is not.** Slug is faithful
+  to the name it is given, which is what a URL path segment and a job's `public_slug` need.
+  CompanySlug answers "which employer is this", where "RingCentral" and "RingCentral, Inc."
+  must not be two answers. Reach for CompanySlug whenever the value keys a COMPANY.
+- **There is exactly one legal-form vocabulary** (`internal/dict/normalize/company.go`), and a test
+  walks the module to keep it that way. There used to be four —
+  `normalize`, `collections/register.go`, `cmd/harvest-ats` and `internal/application/mailmatch` — and they
+  disagreed on substance in both directions: one stripped `gmbh` and `co` repeatedly, another
+  stripped one form from fifteen tokens and refused `co` outright. Every resulting failure was
+  silent, because a slug that matches nothing looks exactly like a company nobody has.
+- **A token earns its place in the data.** The question is never whether a word looks dangerous
+  but whether stripping it lands on a DIFFERENT existing employer. `co` is in the list on that
+  evidence (all 297 catalogue companies ending in it are `& Co.` forms); `spa` is out on the
+  same evidence (`Hilton Luxor Resort & Spa` outweighs every real S.p.A.). `group` is out
+  because it is not a form at all — collapsing `bosch-group` into `bosch` is a judgement, and
+  judgements belong to the merge worker, which shows a dry run and records a reversible alias.
+- **A Japanese form is kept as a mark, not dropped** (`株式会社Speee` → `speee-kk`). Dropping it
+  failed the test above: 726 small Japanese firms landed on an unrelated namesake's key
+  (株式会社タケダ on Takeda), because a romanised short name is so often someone else's word.
+- **`company_slug_aliases` is the one company-adjacent table that is NOT derived from `jobs`.**
+  Everything else here is rebuilt by `SyncCompaniesFromJobs`, and `DeleteOrphanCompanies`
+  removes any `companies` row no job references. A canonical decision recorded there would
+  vanish the day an employer's last posting closed, and the next posting spelled the other way
+  would open a fresh company — the duplicate restored on a timer. For the same reason there is
+  deliberately **no foreign key** from `canonical_slug` to `companies(slug)`: the intuitive
+  constraint would delete exactly what the table exists to keep.
+- **The registry is read from both ends.** Ingest asks by `folded_key` (hyphens removed) so a
+  spelling nobody ever merged still reaches the canon its folded form owns; `GET
+  /companies/:slug` asks by `alias_slug` to serve a 301 — and only AFTER the company read
+  misses, so a company that came back is never shadowed by the row that once retired it.
+- **A name with no posting behind it resolves through the same key, and refuses what is
+  unsettled.** `internal/job/formeremployer` maps the company names of a person's experience
+  bank to slugs for the "Hiring again" filter: `CompanyKey` of the name, the registry by
+  `folded_key`, and otherwise the hiring companies whose slug folds to it
+  (`companies_folded_slug_idx`). Two hiring slugs on one key and no registry entry to choose
+  between them is refused, never resolved — the `cmd/publish-logo-domains` rule, because a
+  wrong employer shown under a familiar name is worse than none. The package doc carries the
+  measured precision and the rest of its refusals.
+- **`folded_key` is the ALIAS's own fold, never the group's.** For a folded group the two are
+  the same by construction, so the distinction only shows up on a curated group — whose members
+  do not share a fold, that being what makes it curated. Writing the group's key there leaves
+  the retiring spelling folding to a key no row holds: the merge reports success, the 301
+  works, and the next crawl of that board mints the duplicate again. Pinned by
+  `TestApplyMerges_WritesEachAliasOwnFoldedKey`.
+- **It folds the NAME, not the slug**, and 0112's comment said otherwise until migration 0144
+  corrected it. `CompanyKey` strips a trailing legal form before folding, so "Sun Technologies,
+  Inc." keys at `suntechnologies` while its stored slug folds to `suntechnologiesinc`. The name
+  is the correct side: ingest folds the name its SOURCE sends, so a key built from the slug
+  would be one no crawl ever asks for. The rows a curated merge writes are the visible
+  consequence — keys that differ within one group, which is what such a group IS, not corruption.
+- **The canon freezes at first merge.** `InsertCompanySlugAlias` is `ON CONFLICT DO NOTHING`
+  and the worker holds elected slugs out of a later election. A re-election would move a URL
+  that has already been redirecting and indexing.
+- **One resolved map, two consumers.** `pipeline.Runner` resolves the registry once per board
+  run, and that map feeds BOTH the aggregator-coverage gate and the upsert. This is a spec
+  requirement, not a convenience: the two used to agree only because both applied the same pure
+  function, the coverage gate has already leaked once over slug spelling, and a gate that has
+  silently stopped matching is indistinguishable from a board with nothing to suppress.
+- **`jobderive` stays pure** — no context, no database, asserted on its signature by reflection.
+  Every write path shares it, which is what stops the deterministic facets diverging between
+  ingest, moderator authoring and Telegram. That is why class 1b resolves in the pipeline.
+
+## How it works
+
+Two duplicate classes, measured on prod 2026-08-17 across the 152,916 companies with an open
+job (1,380,940 open jobs):
+
+| Class | Example | Groups | Companies | Open jobs |
+|---|---|---|---|---|
+| Trailing legal form | `ringcentral` / `ringcentral-inc` | 4,149 | 8,462 | 229,004 |
+| Squashed spelling | `dollar-tree` / `dollartree` | 1,368 | 2,744 | 121,836 |
+
+The first is a pure rule and the write path applies it unaided, so it stops happening the
+moment the code ships. The second cannot be: `jpmorganchase` and `jp-morgan-chase` are both
+honest output of that rule — one source wrote "JPMorganChase", another "JP Morgan Chase" — so
+collapsing them means electing a winner, and the winner has to be remembered.
+
+There is a third class the fold cannot see at all, because the two spellings do not fold
+together: one employer whose boards disagree about the NAME. Exadel runs two Greenhouse boards
+calling themselves "Exadel" and "Exadel Inc (Website)", which key at `exadel` and
+`exadelincwebsite` — four slugs in total, 110 shared open job titles, and about half its
+catalogue duplicated. `cmd/merge-companies/curated.go` names those pairs by hand.
+
+**It is a list and not a rule on purpose.** Every entry has the same shape — a base name with
+a numeric or parenthesised suffix — and that shape is not safe to automate: of the 1,206
+prefix pairs differing by a trailing number (measured 2026-09-06 across 447,148 companies),
+`Intel`/`intel471`, `Four Seasons`/`Four Seasons Certified Home Health Agency`,
+`SpaceX`/`SpaceXAI` and `Blend`/`Blend360` are different employers. A wrong merge costs more
+than a missed one, since the alias is what the 301 reads. So the NAME proposes and the
+POSTINGS decide: an entry is confirmed by the ROLES the two slugs share among their open
+postings, read as a share of the SMALLER side, and the count is recorded beside it.
+`blend`/`blend-360` scored 10 against `blend`'s own 87 open postings — barely a tenth of the
+smaller side — and was left out, on the same evidence the name alone got wrong.
+
+Roles and not raw titles, because a posting syndicated twice is "General Counsel" on one board
+and "General Counsel - Remote" on the other, which an equality on the title scores at zero. A
+share and not an absolute, because a duplicate of nine postings can never reach a fixed floor
+however completely it duplicates. And a shared DOMAIN outranks both: `micro1` posting from
+`req.micro1.ai` beside a feed calling the employer "micro1 AI" is the employer naming itself.
+The worked query lives in `curated.go`; it approximates the role fold rather than reproducing
+`jobhash.RoleKey`, and says so.
+
+The invariants (canonical slug is a fixed point of `CompanySlug`, no entry points at a slug
+that is itself retiring) are enforced by `TestCuratedAliasesAreWellFormed`, not by review.
+
+`cmd/merge-companies` groups companies by `normalize.CompanyKey` of the NAME (which is what
+covers both classes in one pass), elects the highest `job_count` variant, and records the rest
+as aliases. A curated group overrides that grouping: its canon is the one the list names, not
+the one an election reaches — Sopra Steria's artefact board carries 1,336 open jobs against the
+real company's 337, so an election would retire the company into its own artefact.
+
+A company with NO twin is planned too when the rule itself has moved under it: its stored slug
+is the plain `Slug` of its name, yet `CompanySlug` now derives another — a form the rule learned
+to strip after the slug was minted. The Japanese forms are the case that made this necessary:
+株式会社 used to reach `Slug` whole and was romanised as Chinese, `zhu-shi-hui-she-…`, on ~12k
+companies (2026-10-26); it now keys as a Latin mark (`speee-kk`), so almost none of them has
+another spelling to merge with. Ingest and
+`backfill-derive` re-key such a company regardless; skipping it here would leave the old URL
+404ing with no alias. The South-Asian forms are the second case and a different shape: the rule
+already stripped "Ltd" but not the "Pvt" or "Private" before it, so "Acme Pvt Ltd" was minted
+`acme-pvt` — neither the plain slug nor the current key (1,936 companies, 2026-10-27). A stored
+slug that lies BETWEEN the two (the current key a prefix of it, it a prefix of the plain slug,
+compared folded and cut only at a word boundary) is planned the same way, since everything it
+carries beyond the key is a form. The test is `normalize.SlugPredatesRule`, and
+`backfill-derive` applies the SAME one when it re-keys a slug itself: it records the
+`legal_form` alias only when every row it moved off the old slug passes it and all of them land
+on one new slug, so the old URL 301s instead of serving an empty page. A slug a rename left
+behind, or one two employers shared under the old rule, gets no alias from it — that stays a
+judgement for this worker's reviewed waves. The statement also refuses an alias that would move
+a canon, point at a retired slug, or give a folded key a second canon.
+Any other slug that is not the plain slug of the latest name is left alone — it drifted because
+the source renamed the employer, which is a judgement, not a form.
+`--reason legal_form` takes only the groups whose every alias is that pure-rule class, so a
+wave like this one can run without dragging the unreviewed spelling backlog along with it.
+`--only-slugs <file>` narrows a wave to the whole groups holding a listed slug — how a few
+groups already read by a person are taken without the rest of the spelling backlog.
+`--exact-slugs <file>` plans over only the listed slugs and reads only their rows through the
+index. `--only-slugs` still reads the whole table first, which on 22.8M rows did not finish in 50
+minutes under prod's load (2026-11-03). The election sees only what is listed, so name every slug
+of each group; an unlisted member stays where it is until a later wave.
+A plan the registry contradicts (a retired canon, a slug or folded key already settled on another
+canon) is refused whole, because the election cannot see a frozen canon that was not listed.
+
+It reports by default; `--apply` writes and `--min-jobs` bounds a wave so the plan
+stays short enough to read. Jobs move in chunks whose statement selects rows still carrying the
+retired slug, so an updated row leaves the set — the loop ends on its own, a re-run moves
+nothing, and an interrupted wave resumes. The alias row is written BEFORE its jobs move: a run
+killed between the two then leaves a slug that redirects to a company whose count is short,
+where the other order leaves a slug with no jobs and no record of where they went.
+
+A wave ends by reconciling the derived catalogue — `InsertMissingCanonicalCompanies` (a row for
+each canonical slug that holds jobs and has none) then `DeleteOrphanAliasCompanies` (the row of
+each retired slug no job carries). Both are scoped to the alias REGISTRY, not to `jobs`: the
+full-table `SyncCompaniesFromJobs` + `DeleteOrphanCompanies` pair the worker used to run costs
+the same on a 20-group wave as on a 20k-group one, and on 2026-10-28 one held its transaction
+for 56 minutes while every ingest `UpsertJob` (which upserts `companies` too) queued behind it.
+The registry, rather than the current wave, so a run killed before this step is healed by the
+next one, whose plan no longer holds the drained slugs. Skipping it looks harmless and is not: until the orphan row is gone, `GET /companies/<retired>`
+still FINDS a company, one with no jobs left, so it answers 200 and never falls through to the
+alias lookup. The merge reads as done while the redirect it exists to serve is not running.
+
+The re-key moves CLOSED postings too, so the row count it writes is larger than the open-job
+figure the plan reports — about 3x on prod. That is deliberate: a closed posting left on the
+retired slug would resurrect the duplicate the day it reopens.
+
+**The worker does not touch the search index, deliberately.** A push to the facet index costs
+90-180s regardless of batch size, so feeding a wave through `search_outbox` would be tens of
+hours of pushes — the shape behind the 2026-08-05 outage. **Follow a wave (or a day of waves)
+with one by-hand rebuild**, `systemctl start --no-block freehire-reindexw.service`: no timer
+runs it since 2026-11-05, so nothing else carries the re-key into search. Until it runs, a
+merged company under-counts its jobs and nothing 404s. Do not set `REINDEX_DEDUP`.
+
+`jobs.company` is left alone by a merge. The source keeps sending "DollarTree", so the next
+crawl would put it back, and the display name comes from `companies.name` regardless.
+
+**Any worker that re-derives `company_slug` must resolve through the registry.** `jobderive` is
+pure, so a re-derive yields the spelling the SOURCE used — which for a merged posting is the
+retired one. `cmd/backfill-derive` loads the registry once per run and resolves before it
+computes `role_fingerprint` (itself derived from the company slug); without that, a routine
+~15h backfill would silently undo every spelling merge and churn the repost identities on the
+way out. A worker that cannot READ the registry must fail rather than proceed: an empty
+registry is indistinguishable from a catalogue with no merges.
+
+**The merge worker plans from `jobs`, never from `companies.job_count`.** That column counts the
+postings the SEARCH INDEX holds, not the rows the worker rewrites, and the two diverge exactly
+where it hurts: a slug a merge has already retired drops to 0 in the index while its unmoved
+rows stay in the table. Filtering on it made the leftovers of a merge invisible — 8,375 rows
+stranded on `jpmorganchase` after the first wave, permanently, because the better the merge
+worked the more reliably the remainder hid.
+
+## The registered seat
+
+`normalize.CloseSpacedForms` drops the town a Slovenian or Croatian register name carries after
+its form ("TERME KRKA, d.o.o., Novo mesto"), but only with two or more name words before the
+form. A one-word name keeps its seat because the seat is what separates it from a namesake:
+measured 2026-11-04, 3 of the 7 one-word names that met an existing company met a different
+employer (`SCAN, d.o.o., Preddvor` on the US SCAN), against 0 of 22 longer names. Merge a
+one-word employer's spellings by a curated entry or a moderator's approval.
+
+## Corrections people propose (freehire#3895)
+
+The fold and the curated list cannot reach every duplicate, and nothing in them knows that two
+DIFFERENT employers belong together. A signed-in visitor can propose either from a company page
+(`POST /companies/:slug/relations`), and a moderator decides it in `/moderation?tab=companies`.
+`internal/job/companyrelation` holds the rules.
+
+- **`same`: one employer under two slugs.** Approval writes the alias with reason `moderator`
+  (migration 0230, its own class so it can be reversed alone) and its folded key from the
+  retiring company's NAME, then moves the jobs and reconciles the companies rows. Both writers
+  go through `internal/job/companymerge` (record and repoint, re-key, reconcile), so a merge
+  wave and a moderator's approval run the same procedure. The difference is that this one
+  runs inside the request. It refuses
+  what would break the registry silently: a retiring slug that is already someone's canon, a
+  canon that is itself retired, a slug already merged elsewhere, and a folded key that already
+  has a different canon. Approvals take an advisory lock (`fhcr`), so two checked against the
+  same registry cannot together make a chain. The registry row commits before the move; a move
+  that fails part-way leaves the proposal in the queue as approved, and approving it again
+  resumes it. The folded key comes from the retiring slug's newest POSTING's spelling, as the
+  merge worker reads it, not from `companies.name`, which can be a curated display name.
+- **`subsidiary`: two employers, one owned by the other.** Novartis Slovenija is not Novartis,
+  and merging the two would show one company's jobs under another's name. So nothing moves.
+  `company_parents` links them, and each company page names the other (`parent`,
+  `subsidiaries` on `GET /companies/:slug`). It is one level deep: a parent never has a parent,
+  so no page walks a chain. A merge carries the retiring slug's subsidiaries to the canon, or to
+  the canon's own parent when it has one.
+- Neither table has a foreign key to `companies`, for the reason `company_slug_aliases` has none:
+  a decision has to outlive the company row it was made about.
+
+**The website is the merge signal sources can give us.** `sources.Job.CompanyWebsite` carries
+an employer's own site where a source states it in a structured field. EURES does for about a
+third of named employers in AT/BE/DE; its `legalID` was empty in every posting sampled. The
+pipeline writes it to `company_info.feed_website`, never to `website`: the curated fillers
+(Wikipedia, YC, an employer's claim) only fill a blank `website`, so a feed value there would
+block them forever, and the logo map and the company header trust `website` as curated.
+`cmd/report-company-website-twins` reads either key through `logodomain.Domain` (the logo map's
+own reader) and lists the companies that share a website host while their
+names fold apart: Forum Jobs' branches (all `forumjobs.be`), or a posting whose employer name
+is really a job title. It is a report and never a merge, because a job board's or a group's
+host can stand behind several employers. A person reads it and proposes the merges.
+
+## Gotchas
+
+- **The canonical slug must be a fixed point of the rule, and job count alone does not give
+  you one.** The first prod dry run elected `danaher-corporation` over `danaher` (714 open
+  jobs) purely because it was larger — making the canonical url the one carrying a corporate
+  form, and 301ing the better-known slug into it. It is unstable too: every new posting derives
+  the stripped slug, so the canon would depend forever on an alias row to reach itself. The
+  canon is therefore always `CompanySlug` of the elected member's NAME, never a stored slug
+  reused — which makes it a fixed point by construction and needs no separate rule. Returning a
+  slug no row holds yet is safe and often right (`carnival`, `public-storage`): a company
+  already using it would fold to the same key, so it would be a member, and the reconcile that
+  follows the re-key creates the row.
+- **Read the NAME, not the slug, when choosing between spellings.** "Prefer the more
+  hyphenated slug" is the tempting rule and it elects `domino-s` (1 job) over `dominos`
+  (14,396) and `al-fa-bank` (20) over `alfa-bank` (1,617): in a slug an apostrophe is
+  indistinguishable from a word break. What actually decides is whether the employer WRITES
+  its name in several words — `Western Digital`, `Ace Hardware` and `Kimberly-Clark` do, `AT&T`,
+  `Brink's` and `Dominos` do not. A hyphen in the NAME separates words; an apostrophe does not —
+  and `CompanySlug` DROPS apostrophes before slugging, so "Kohl's" keys at `kohls` rather than
+  the `kohl-s` plain `Slug` would give. That artefact stopped being survivable once the canon
+  became derived rather than chosen among stored slugs: it elected `kohl-s` over `kohls` across
+  2,939 postings.
+
+  The preference only speaks when it discriminates. Where no name is multi-word, or every name
+  is, the job count decides as before.
+- **The word break is not whitespace.** It is every rune `Slug` drops EXCEPT `.` and `/`, which
+  live inside the forms themselves (`B.V.`, `A/S`). Whitespace alone loses
+  `Sun Technologies,Inc.`, and 13,730 catalogue companies are written that way.
+- **`collections.significantFields` is NOT the same tokenization** and must not be folded into
+  it. `RequireCountry` counts how specific a register name is, and `T-Mobile Inc` has to count
+  as ONE significant token or a single-token name skips its headquarters check.
+- **A fixture without a corporate form proves nothing.** A test for this rule whose company is
+  "DollarTree" passes whether the code is right or wrong, because `Slug` and `CompanySlug`
+  agree on it. That is how the coverage-gate leak was reintroduced and shipped past two green
+  tests during this very change.

@@ -1,0 +1,199 @@
+package handler
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/strelov1/freehire/internal/api/apigen"
+	"github.com/strelov1/freehire/internal/identity/auth"
+	"github.com/strelov1/freehire/internal/identity/billing"
+	"github.com/strelov1/freehire/internal/platform/db"
+	"github.com/strelov1/freehire/internal/platform/pgconv"
+)
+
+// mintAPIKey generates a new API key for the user and persists it (only the hash is stored),
+// returning the plaintext token, revealed to the caller exactly once, and the stored row.
+func (h *authHandlers) mintAPIKey(ctx context.Context, userID int64, name string, expiresAt pgtype.Timestamptz, scope string) (string, db.CreateAPIKeyRow, error) {
+	token, hash, prefix, err := auth.GenerateAPIKey()
+	if err != nil {
+		// Returned rather than phrased as fiber.NewError(500, …): the exception log needs the cause,
+		// which a *fiber.Error does not carry. The caller sees the generic 500 body (see classify).
+		return "", db.CreateAPIKeyRow{}, fmt.Errorf("generate api key for user %d: %w", userID, err)
+	}
+	row, err := h.queries.CreateAPIKey(ctx, db.CreateAPIKeyParams{
+		UserID:      userID,
+		Name:        name,
+		TokenHash:   hash,
+		TokenPrefix: prefix,
+		Scope:       scope,
+		ExpiresAt:   expiresAt,
+	})
+	// The statement inserts nothing when the account's address was never proven. That is an
+	// authorization refusal, not a failed lookup: 403, not 404. The SPA hides the button, so
+	// this guards direct API calls.
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", db.CreateAPIKeyRow{}, fiber.NewError(fiber.StatusForbidden,
+			"confirm your email address before creating an API key")
+	}
+	if err != nil {
+		return "", db.CreateAPIKeyRow{}, err
+	}
+	return token, row, nil
+}
+
+// CreateApiKey mints a new API key for the authenticated user and returns the plaintext token
+// exactly once. Cookie-only (RequireAuth): a leaked key must not mint more keys. An empty scope
+// mints auth.ScopeFull; the only other client-requestable scope is auth.ScopeEmbed (read-only
+// api_keys validation by a separate service, no access to freehire's own API). ScopeCV stays
+// server-only.
+func (h *authHandlers) CreateApiKey(ctx context.Context, req *apigen.ApiKeyCreate) (*apigen.CreateApiKeyCreated, error) {
+	userID, err := requireUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	name := strings.TrimSpace(req.Name.Value)
+	if name == "" {
+		return nil, fiber.NewError(fiber.StatusBadRequest, "name is required")
+	}
+
+	scope := auth.ScopeFull
+	if req.Scope.Value != "" {
+		if req.Scope.Value != auth.ScopeEmbed {
+			return nil, fiber.NewError(fiber.StatusBadRequest, "invalid scope")
+		}
+		scope = req.Scope.Value
+	}
+
+	token, row, err := h.mintAPIKey(ctx, userID, name, pgconv.Timestamptz(ptrOf(req.ExpiresAt.Get)), scope)
+	if err != nil {
+		return nil, err
+	}
+
+	return &apigen.CreateApiKeyCreated{Data: apigen.ApiKeyCreated{
+		ID:          row.ID,
+		Name:        row.Name,
+		TokenPrefix: row.TokenPrefix,
+		Scope:       row.Scope,
+		CreatedAt:   nilDateTime(pgconv.TimePtr(row.CreatedAt)),
+		LastUsedAt:  nilDateTime(pgconv.TimePtr(row.LastUsedAt)),
+		ExpiresAt:   nilDateTime(pgconv.TimePtr(row.ExpiresAt)),
+		Token:       token,
+	}}, nil
+}
+
+// ListApiKeys returns the authenticated user's keys, newest first, as metadata only
+// (never the token or its hash). Cookie-only.
+func (h *authHandlers) ListApiKeys(ctx context.Context) (*apigen.ListApiKeysOK, error) {
+	userID, err := requireUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := h.queries.ListAPIKeysByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]apigen.ApiKey, len(rows))
+	for i, r := range rows {
+		keys[i] = apigen.ApiKey{
+			ID:          r.ID,
+			Name:        r.Name,
+			TokenPrefix: r.TokenPrefix,
+			Scope:       r.Scope,
+			CreatedAt:   nilDateTime(pgconv.TimePtr(r.CreatedAt)),
+			LastUsedAt:  nilDateTime(pgconv.TimePtr(r.LastUsedAt)),
+			ExpiresAt:   nilDateTime(pgconv.TimePtr(r.ExpiresAt)),
+		}
+	}
+	// Owner-scoped and unpaginated; meta carries the count to keep the list envelope consistent.
+	return &apigen.ListApiKeysOK{Data: keys, Meta: apigen.AccountTotalMeta{Total: int64(len(keys))}}, nil
+}
+
+// RevokeApiKey deletes one of the authenticated user's keys by id. Owner-scoped: an
+// id that does not exist or belongs to another user deletes nothing and is a 404,
+// revealing nothing about it. Cookie-only.
+func (h *authHandlers) RevokeApiKey(ctx context.Context, params apigen.RevokeApiKeyParams) error {
+	userID, err := requireUserIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	id, err := contractPathID(params.ID)
+	if err != nil {
+		return err
+	}
+
+	affected, err := h.queries.DeleteAPIKey(ctx, db.DeleteAPIKeyParams{ID: id, UserID: userID})
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fiber.NewError(fiber.StatusNotFound, "key not found")
+	}
+	return nil
+}
+
+// apiPlanResponse is the account's API product entitlement. The assistant's account tool
+// writes it too, so it stays a Go type beside the contract's ApiKeyPlan.
+type apiPlanResponse struct {
+	Tier  billing.APITier `json:"tier"`
+	Until *time.Time      `json:"until,omitempty"`
+}
+
+// GetApiPlan reports the caller's API standing. Cookie-only, like the rest of key management.
+func (h *authHandlers) GetApiPlan(ctx context.Context) (*apigen.GetApiPlanOK, error) {
+	userID, err := requireUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	row, err := h.queries.GetUserAPIEntitlement(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	plan := apiPlanFrom(row, time.Now())
+	out := apigen.ApiKeyPlan{Tier: apigen.ApiKeyPlanTier(plan.Tier)}
+	optNil(plan.Until, out.Until.SetTo)
+	return &apigen.GetApiPlanOK{Data: out}, nil
+}
+
+// apiUsageDays is how far back the account's API page charts its requests.
+const apiUsageDays = 30
+
+// GetApiUsage reports the caller's API requests per UTC day over the last apiUsageDays
+// days (today included). Cookie-only, like the rest of key management.
+func (h *authHandlers) GetApiUsage(ctx context.Context) (*apigen.GetApiUsageOK, error) {
+	userID, err := requireUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	since := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -(apiUsageDays - 1))
+	rows, err := h.queries.ListAPIUsage(ctx, db.ListAPIUsageParams{UserID: userID, Since: pgtype.Date{Time: since, Valid: true}})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]apigen.ApiUsageDay, len(rows))
+	for i, r := range rows {
+		out[i] = apigen.ApiUsageDay{Day: r.Day.Time, Requests: r.Requests, Errors: r.Errors}
+	}
+	return &apigen.GetApiUsageOK{Data: out}, nil
+}
+
+func apiPlanFrom(row db.GetUserAPIEntitlementRow, now time.Time) apiPlanResponse {
+	apiUntil, dataUntil := row.ApiUntilStripe.Time, row.ApiDataUntilStripe.Time
+	out := apiPlanResponse{Tier: billing.APITierOf(apiUntil, dataUntil, now)}
+	switch out.Tier {
+	case billing.APITierData:
+		out.Until = &dataUntil
+	case billing.APITierAPI:
+		out.Until = &apiUntil
+	}
+	return out
+}

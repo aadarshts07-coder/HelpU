@@ -1,0 +1,453 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/strelov1/freehire/internal/ingest/sources"
+)
+
+// greenhouseBoardsAPI mirrors the unexported sources.greenhouseBaseURL.
+const greenhouseBoardsAPI = "https://boards-api.greenhouse.io/v1/boards"
+
+// httpClient is the transport a prober needs: GetJSON, PostJSON (Workday CXS), GetXML (iCIMS/Deel
+// sitemaps) and GetHTML (Freshteam). *sources.Client implements all of them.
+type httpClient interface {
+	sources.JSONGetter
+	sources.JSONPoster
+	sources.XMLGetter
+	sources.HTMLGetter
+	sources.TextGetter
+	sources.HeaderJSONGetter
+	sources.HeaderJSONPoster
+}
+
+// prober checks one candidate board, returning the platform's company name and open-job count.
+// An absent, closed or unreachable board yields ("", 0, nil), a skip that never aborts the
+// harvest; a non-nil error is for failures worth surfacing (the caller logs and skips those too).
+type prober interface {
+	probe(ctx context.Context, c httpClient, slug string) (company string, openJobs int, err error)
+}
+
+// seededProber is the optional half for a prober that needs the seed's employer to probe at all
+// (today only adapterProber). probeAll calls it instead of probe, passing "" for a company-less seed.
+type seededProber interface {
+	probeSeeded(ctx context.Context, c httpClient, slug, company string) (string, int, error)
+}
+
+// idProber is the optional half that reports the ids of a board's live postings, so a seed that
+// knows one posting's id can identify the board by evidence instead of by a name resemblance.
+//
+// Implement it only where one request yields the COMPLETE live list, because a missing id reads as
+// "wrong board". A prober that pages, or asks per posting, must not: its silence leaves the id inert.
+//
+// It re-requests the listing rather than widening prober's return, and only for seeds naming a posting.
+type idProber interface {
+	postingIDs(ctx context.Context, c httpClient, slug string) ([]string, error)
+}
+
+// greenhouseProber probes the Greenhouse public boards API. The jobs endpoint lists only
+// live postings, so a non-empty list means a live board. The company name comes from the
+// board-metadata endpoint, fetched only once a board is known to have jobs.
+type greenhouseProber struct{}
+
+func greenhouseJobsURL(slug string) string {
+	return fmt.Sprintf("%s/%s/jobs", greenhouseBoardsAPI, slug)
+}
+
+// postingIDs lists the live posting ids; one response carries the complete list.
+func (greenhouseProber) postingIDs(ctx context.Context, c httpClient, slug string) ([]string, error) {
+	var jr struct {
+		Jobs []struct {
+			ID int64 `json:"id"`
+		} `json:"jobs"`
+	}
+	if err := c.GetJSON(ctx, greenhouseJobsURL(slug), &jr); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(jr.Jobs))
+	for _, j := range jr.Jobs {
+		ids = append(ids, strconv.FormatInt(j.ID, 10))
+	}
+	return ids, nil
+}
+
+func (greenhouseProber) probe(ctx context.Context, c httpClient, slug string) (string, int, error) {
+	var jr struct {
+		Jobs []struct {
+			ID int64 `json:"id"`
+		} `json:"jobs"`
+	}
+	// A missing or moved board is a 4xx error: skip it, don't propagate.
+	if err := c.GetJSON(ctx, greenhouseJobsURL(slug), &jr); err != nil {
+		return "", 0, nil
+	}
+	if len(jr.Jobs) == 0 {
+		return "", 0, nil
+	}
+	var meta struct {
+		Name string `json:"name"`
+	}
+	_ = c.GetJSON(ctx, fmt.Sprintf("%s/%s", greenhouseBoardsAPI, slug), &meta)
+	name := meta.Name
+	if name == "" {
+		name = slug
+	}
+	return name, len(jr.Jobs), nil
+}
+
+// greenhouseBoardsHost is the web host Common Crawl actually visits. Validation still goes through
+// greenhouseBoardsAPI.
+const greenhouseBoardsHost = "boards.greenhouse.io"
+
+// discover finds Greenhouse board candidates from the Common Crawl CDX index: every URL
+// Common Crawl has seen under greenhouseBoardsHost, sliced to its company slug.
+func (greenhouseProber) discover(ctx context.Context, c httpClient) ([]string, error) {
+	return commonCrawlCandidates(ctx, c, greenhouseBoardsHost+"/*", commonCrawlSlug)
+}
+
+// dedupKey folds case: the boards API is case-insensitive, so a differently cased Common Crawl hit
+// is the same board.
+func (greenhouseProber) dedupKey(boardID string) string { return strings.ToLower(boardID) }
+
+// leverProber probes the Lever postings API. The JSON-mode endpoint returns a bare array
+// of live postings, so a non-empty array is a live board. The posting API exposes no company
+// name, but the board's storefront titles itself after the employer, so the name is read
+// there once the board is known to be live.
+type leverProber struct{}
+
+func leverPostingsURL(slug string) string {
+	return fmt.Sprintf("https://api.lever.co/v0/postings/%s?mode=json", slug)
+}
+
+// postingIDs lists the live posting ids; one response carries the complete list.
+func (leverProber) postingIDs(ctx context.Context, c httpClient, slug string) ([]string, error) {
+	var postings []struct {
+		ID string `json:"id"`
+	}
+	if err := c.GetJSON(ctx, leverPostingsURL(slug), &postings); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(postings))
+	for _, p := range postings {
+		ids = append(ids, p.ID)
+	}
+	return ids, nil
+}
+
+func (leverProber) probe(ctx context.Context, c httpClient, slug string) (string, int, error) {
+	var postings []struct {
+		ID string `json:"id"`
+	}
+	if err := c.GetJSON(ctx, leverPostingsURL(slug), &postings); err != nil {
+		return "", 0, nil
+	}
+	if len(postings) == 0 {
+		return "", 0, nil
+	}
+	return storefrontEmployer(ctx, c, fmt.Sprintf("https://jobs.lever.co/%s", slug), ""), len(postings), nil
+}
+
+// ashbyProber probes the Ashby job-board API. A non-empty list is a live board; the name is read
+// from the storefront title "<Company> Jobs". The API is case-insensitive, see dedupKey.
+type ashbyProber struct{}
+
+// dedupKey folds case: the API serves identical content for "abridge" and "Abridge", so they are
+// one board.
+func (ashbyProber) dedupKey(boardID string) string { return strings.ToLower(boardID) }
+
+func ashbyBoardURL(slug string) string {
+	return fmt.Sprintf("https://api.ashbyhq.com/posting-api/job-board/%s", slug)
+}
+
+// postingIDs lists the live posting ids; one response carries the complete list.
+func (ashbyProber) postingIDs(ctx context.Context, c httpClient, slug string) ([]string, error) {
+	var resp struct {
+		Jobs []struct {
+			ID string `json:"id"`
+		} `json:"jobs"`
+	}
+	if err := c.GetJSON(ctx, ashbyBoardURL(slug), &resp); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(resp.Jobs))
+	for _, j := range resp.Jobs {
+		ids = append(ids, j.ID)
+	}
+	return ids, nil
+}
+
+func (ashbyProber) probe(ctx context.Context, c httpClient, slug string) (string, int, error) {
+	var resp struct {
+		Jobs []struct {
+			ID string `json:"id"`
+		} `json:"jobs"`
+	}
+	if err := c.GetJSON(ctx, ashbyBoardURL(slug), &resp); err != nil {
+		return "", 0, nil
+	}
+	if len(resp.Jobs) == 0 {
+		return "", 0, nil
+	}
+	return storefrontEmployer(ctx, c, fmt.Sprintf("https://jobs.ashbyhq.com/%s", slug), " Jobs"), len(resp.Jobs), nil
+}
+
+// ashbyBoardsHost is the host Common Crawl visits, unlike the api host probe validates against.
+const ashbyBoardsHost = "jobs.ashbyhq.com"
+
+// discover finds Ashby board candidates from the Common Crawl CDX index: every URL Common
+// Crawl has seen under ashbyBoardsHost, sliced to its company slug.
+func (ashbyProber) discover(ctx context.Context, c httpClient) ([]string, error) {
+	return commonCrawlCandidates(ctx, c, ashbyBoardsHost+"/*", commonCrawlSlug)
+}
+
+// bamboohrProber probes the BambooHR per-subdomain careers list. A non-empty result is a
+// live board; the name falls back to the slug (the subdomain), as the list carries none.
+type bamboohrProber struct{}
+
+func (bamboohrProber) probe(ctx context.Context, c httpClient, slug string) (string, int, error) {
+	var list struct {
+		Result []struct {
+			ID string `json:"id"`
+		} `json:"result"`
+	}
+	if err := c.GetJSON(ctx, fmt.Sprintf("https://%s.bamboohr.com/careers/list", slug), &list); err != nil {
+		return "", 0, nil
+	}
+	if len(list.Result) == 0 {
+		return "", 0, nil
+	}
+	return "", len(list.Result), nil
+}
+
+// workdayProber probes Workday's POST-only CXS listing. The board id is "<host>/<site>"; the tenant
+// is the host's first label and doubles as the name fallback. The site path is case-insensitive.
+type workdayProber struct{}
+
+func (workdayProber) probe(ctx context.Context, c httpClient, boardID string) (string, int, error) {
+	host, site, ok := strings.Cut(boardID, "/")
+	if !ok || host == "" || site == "" {
+		return "", 0, nil
+	}
+	tenant, _, ok := strings.Cut(host, ".")
+	if !ok || tenant == "" {
+		return "", 0, nil
+	}
+	url := fmt.Sprintf("https://%s/wday/cxs/%s/%s/jobs", host, tenant, site)
+	body := map[string]any{"appliedFacets": map[string]any{}, "limit": 1, "offset": 0, "searchText": ""}
+	var resp struct {
+		Total       int `json:"total"`
+		JobPostings []struct {
+			Title string `json:"title"`
+		} `json:"jobPostings"`
+	}
+	if err := c.PostJSON(ctx, url, body, &resp); err != nil {
+		return "", 0, nil
+	}
+	n := resp.Total
+	if n == 0 {
+		n = len(resp.JobPostings)
+	}
+	if n == 0 {
+		return "", 0, nil
+	}
+	return "", n, nil
+}
+
+// icimsProber judges liveness from the XML sitemap (no JSON API): a live board lists ≥1 /jobs/<id>/
+// URL. A missing site 404s; an empty one lists only /jobs/search and /jobs/intro. The name is the slug.
+type icimsProber struct{}
+
+// icimsJobLocPattern matches the /jobs/<id>/ segment the adapter keys off; duplicated to avoid
+// widening the sources API.
+var icimsJobLocPattern = regexp.MustCompile(`/jobs/\d+/`)
+
+// icimsHost mirrors internal/ingest/sources/icims.go: a board containing a dot IS the careers host,
+// anything else is a bare slug. Rebuilding a vanity host would resolve nowhere and report it dead.
+func icimsHost(board string) string {
+	if strings.Contains(board, ".") {
+		return board
+	}
+	return "careers-" + board + ".icims.com"
+}
+
+// dedupKey folds "careers-<slug>.icims.com" to "<slug>", since the catalogue holds both spellings.
+// Only that form folds: "pppl-princeton.icims.com" and bare "pppl-princeton" are different hosts.
+func (icimsProber) dedupKey(boardID string) string {
+	id := strings.ToLower(boardID)
+	if host, isHost := strings.CutSuffix(id, ".icims.com"); isHost {
+		if slug, prefixed := strings.CutPrefix(host, "careers-"); prefixed && slug != "" {
+			return slug
+		}
+	}
+	return id
+}
+
+func (icimsProber) probe(ctx context.Context, c httpClient, slug string) (string, int, error) {
+	var sitemap struct {
+		URLs []struct {
+			Loc string `xml:"loc"`
+		} `xml:"url"`
+	}
+	if err := c.GetXML(ctx, "https://"+icimsHost(slug)+"/sitemap.xml", &sitemap); err != nil {
+		return "", 0, nil
+	}
+	n := 0
+	for _, u := range sitemap.URLs {
+		if icimsJobLocPattern.MatchString(u.Loc) {
+			n++
+		}
+	}
+	if n == 0 {
+		return "", 0, nil
+	}
+	return "", n, nil
+}
+
+// discoverer is the opt-in capability of a prober that enumerates its own candidate board ids;
+// used when the tool runs without a seed file.
+type discoverer interface {
+	discover(ctx context.Context, c httpClient) ([]string, error)
+}
+
+// probeClienter is the opt-in capability of a prober whose platform refuses the default
+// client the way it refuses the adapter's (an edge that filters on the User-Agent): its
+// non-nil client replaces the provider's default egress for the whole run, pacing included.
+type probeClienter interface {
+	probeClient() *sources.Client
+}
+
+// seedMapper converts a provider's raw seed token into its canonical board id. Providers whose
+// seed token already IS the board id do not implement it.
+type seedMapper interface {
+	boardID(seedToken string) string
+}
+
+// seedResolver is seedMapper for a platform whose seed token may name a POSTING rather than a
+// board, so finding the board costs a request: AppOne's apply.appone.com/job/<id> carries no
+// portal, which only the posting's own record names. It returns "" for a token that names no
+// board; resolveCandidates drops those. A prober implements one of the two, never both.
+type seedResolver interface {
+	resolveSeed(ctx context.Context, c httpClient, seedToken string) (string, error)
+}
+
+// dedupKeyer folds a board id into the key used for dedup against existing boards. A
+// provider whose board ids are case-insensitive (Workday, Ashby) implements it to fold case;
+// the rest dedup case-sensitively, so they do not implement it.
+type dedupKeyer interface {
+	dedupKey(boardID string) string
+}
+
+// dedupKey folds case: Workday's CXS API is case-insensitive.
+func (workdayProber) dedupKey(boardID string) string { return strings.ToLower(boardID) }
+
+// boardID turns a "tenant|dc|site" seed token into "<tenant>.<dc>.myworkdayjobs.com/<site>".
+// A token that is not exactly three non-empty parts is returned unchanged (probe drops it).
+func (workdayProber) boardID(seedToken string) string {
+	parts := strings.Split(seedToken, "|")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return seedToken
+	}
+	return fmt.Sprintf("%s.%s.myworkdayjobs.com/%s", parts[0], parts[1], parts[2])
+}
+
+// probers maps a provider key to its prober. Adding an ATS is one entry here plus the prober type.
+var probers = map[string]prober{
+	"adp":               adpProber{},
+	"adpmyjobs":         adpMyJobsProber{},
+	"greenhouse":        greenhouseProber{},
+	"lever":             leverProber{},
+	"ashby":             ashbyProber{},
+	"bamboohr":          bamboohrProber{},
+	"workday":           workdayProber{},
+	"icims":             icimsProber{},
+	"gupy":              gupyProber{},
+	"pandape":           pandapeBrazilProber,
+	"pandapelatam":      pandapeLatamProber,
+	"workable":          workableProber{},
+	"smartrecruiters":   smartRecruitersProber{},
+	"recruitee":         recruiteeProber{},
+	"pinpoint":          pinpointProber{},
+	"breezy":            breezyProber{},
+	"teamtailor":        teamtailorProber{},
+	"trakstar":          trakstarProber{},
+	"gethired":          gethiredProber{},
+	"taleobe":           taleobeProber{},
+	"personio":          personioProber{},
+	"gem":               gemProber{},
+	"deel":              deelProber{},
+	"freshteam":         freshteamProber{},
+	"jobvite":           jobviteProber{},
+	"opencats":          opencatsProber{},
+	"join":              joinProber{},
+	"oracle":            oracleProber{},
+	"jazzhr":            jazzhrProber{},
+	"careerplug":        careerplugProber{},
+	"applitrack":        applitrackProber{},
+	"applicantstack":    applicantstackProber{},
+	"hiringthing":       hiringthingProber{},
+	"hrmdirect":         hrmdirectProber{},
+	"idealtraits":       idealtraitsProber{},
+	"hireclick":         hireclickProber{client: sources.NewLongTimeoutClient()},
+	"paycom":            paycomProber{},
+	"paycor":            paycorProber{},
+	"tenstreet":         tenstreetProber{},
+	"traffit":           traffitProber{},
+	"erecruiter":        erecruiterProber{},
+	"recruitify":        recruitifyProber{},
+	"isolvedhire":       isolvedProber{host: "isolvedhire.com"},
+	"applicantpro":      isolvedProber{host: "applicantpro.com"},
+	"apploi":            apploiProber{},
+	"paylocity":         paylocityProber{},
+	"hireology":         hireologyProber{},
+	"higherme":          highermeProber{},
+	"pageup":            pageupProber{},
+	"manatal":           manatalProber{},
+	"ukgready":          ukgreadyProber{},
+	"edjoin":            edjoinProber{},
+	"workstream":        workstreamProber{},
+	"trinethire":        trinethireProber{},
+	"gohire":            gohireProber{},
+	"harri":             harriProber{},
+	"hcshiring":         hcshiringProber{},
+	"appone":            apponeProber{},
+	"onlyfy":            onlyfyProber{},
+	"paradox":           paradoxProber{},
+	"phenom":            phenomProber{},
+	"polymer":           polymerProber{},
+	"flatchr":           flatchrProber{},
+	"dvinci":            dvinciProber{},
+	"rexx":              rexxProber{},
+	"coveto":            covetoProber{},
+	"concludis":         concludisProber{},
+	"kenjo":             kenjoProber{},
+	"homerun":           homerunProber{},
+	"easycruit":         easycruitProber{},
+	"hroffice":          hrofficeProber{},
+	"cvwarehouse":       cvwarehouseProber{},
+	"bizneo":            bizneoProber{},
+	"velorahr":          velorahrProber{},
+	"talentsoft":        talentsoftProber{},
+	"digitalrecruiters": digitalrecruitersProber{},
+	"keka":              kekaProber{},
+	"hirehive":          hirehiveProber{},
+	"beehire":           beehireProber{},
+	"inploi":            inploiProber{},
+	"seamlesshiring":    seamlesshiringProber{},
+	"darwinbox":         darwinboxProber,
+	"zohorecruit":       zohoRecruitProber,
+	"pyjamahr":          pyjamahrProber,
+	"greythr":           greythrProber{},
+	"meincheckin":       meincheckinProber{},
+	"helixjobs":         helixjobsProber{},
+	"talentstorm":       talentstormProber{},
+	// Not an ATS: its boards are the platform's own job categories, enumerated from its
+	// sitemap index rather than seeded. See profession_prober.go.
+	"profession":  newProfessionProber(),
+	"cornerstone": adapterProber{provider: "cornerstone", newSource: func() sources.Source { return sources.NewCornerstone(sources.NewClient()) }},
+	"taleo":       adapterProber{provider: "taleo", newSource: func() sources.Source { return sources.NewTaleo(sources.NewCookieClient()) }},
+	"neogov":      adapterProber{provider: "neogov", newSource: func() sources.Source { return sources.NewNeogov(sources.NewClient()) }},
+}

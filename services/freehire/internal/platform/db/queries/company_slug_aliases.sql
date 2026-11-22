@@ -1,0 +1,188 @@
+-- name: ResolveCompanySlugAliases :many
+-- The canonical slug for each folded key in the batch — one round trip per board run, not
+-- one per posting. pipeline.Runner folds the run's distinct company slugs, asks this once,
+-- and hands the ONE resulting map to both the aggregator-coverage gate and the upsert, so
+-- neither can compare a slug the other would not have written.
+--
+-- Keyed on folded_key rather than on alias_slug so a spelling that was never itself merged
+-- still lands: "DollarTree" has no row, but it folds onto "dollartree", which does.
+--
+-- Ordered so the answer is deterministic. One canonical slug per folded key is an invariant
+-- the WRITER holds — planMerges elects exactly one winner per folded group and never
+-- re-elects against a frozen canon — but the schema cannot express "at most one DISTINCT
+-- canonical_slug per folded_key" without a second table, and this design deliberately keeps
+-- one. Without the ORDER BY a violation would resolve differently run to run; with it, the
+-- adapter can also see the conflict and say so.
+SELECT folded_key, canonical_slug
+FROM company_slug_aliases
+WHERE folded_key = ANY(@folded_keys::text[])
+ORDER BY folded_key, canonical_slug;
+
+-- name: GetCompanySlugAlias :one
+-- Where a retired slug should 301 to. GET /companies/:slug consults this only AFTER missing
+-- in `companies`, so a re-created company always wins over a stale alias.
+SELECT canonical_slug
+FROM company_slug_aliases
+WHERE alias_slug = @alias_slug;
+
+-- name: InsertCompanySlugAlias :execrows
+-- Record a merge. DO NOTHING on conflict because the canon is frozen at first merge: a later
+-- run that re-elects a different winner for the same folded group must not silently move a
+-- URL that has already been 301-ing and indexed.
+INSERT INTO company_slug_aliases (alias_slug, canonical_slug, folded_key, reason)
+VALUES (@alias_slug, @canonical_slug, @folded_key, @reason)
+ON CONFLICT (alias_slug) DO NOTHING;
+
+-- name: ListCanonicalCompanySlugs :many
+-- Every slug already elected canonical. The merge worker holds these out of a new election,
+-- which is what "frozen" means in practice.
+SELECT DISTINCT canonical_slug FROM company_slug_aliases;
+
+-- name: ListCompaniesForMerge :many
+-- The merge worker's input: every company slug the JOBS table actually holds, with the display
+-- name and the open-job count that elects the winner of its folded group.
+--
+-- READ FROM jobs, NOT FROM companies.job_count. That column counts the postings the SEARCH
+-- INDEX holds, not the rows this worker rewrites, and the two diverge exactly where it hurts:
+-- a slug a merge has already retired drops to 0 in the index while its unmoved rows stay in
+-- the table. Planning from the counter made those rows INVISIBLE to the planner — 8,375 of
+-- them on `jpmorganchase` alone, stranded permanently, because the better the merge worked the
+-- more reliably the remainder hid.
+--
+-- The name is the most recent one seen for the slug, matching how SyncCompaniesFromJobs
+-- collapses a slug's name variants. Grouping into folded groups happens in Go because the fold
+-- is normalize.CompanyKey — a repeating legal-form strip no SQL expression should reproduce,
+-- since a second implementation of that rule is the bug this whole change removes.
+SELECT company_slug AS slug,
+       -- id breaks the tie: two rows sharing a created_at would otherwise pick a name
+       -- arbitrarily, and the name decides the CANONICAL SLUG — so a dry run a human read
+       -- could differ from what --apply then does.
+       ((array_agg(company ORDER BY created_at DESC, id DESC))[1])::text AS name,
+       count(*) FILTER (WHERE closed_at IS NULL)::int AS job_count
+FROM jobs
+WHERE company_slug <> ''
+GROUP BY company_slug;
+
+-- name: ListCompaniesForMergeBySlugs :many
+-- ListCompaniesForMerge for the slugs a person named (--exact-slugs), read through the
+-- company_slug index. The whole-table read groups 22.8M rows and did not finish in 50 minutes
+-- under prod's load on 2026-11-03, so a merge of three slugs could not be planned at all.
+SELECT company_slug AS slug,
+       ((array_agg(company ORDER BY created_at DESC, id DESC))[1])::text AS name,
+       count(*) FILTER (WHERE closed_at IS NULL)::int AS job_count
+FROM jobs
+WHERE company_slug = ANY(@slugs::text[])
+GROUP BY company_slug;
+
+-- name: RekeyCompanySlugChunk :execrows
+-- Move one chunk of a retired slug's jobs onto the canonical slug.
+--
+-- company_slug_folded is written in the same statement, as every write path that sets
+-- company_slug must (migration 0109; internal/platform/db/folded_slug_rule_test.go enforces it).
+--
+-- Idempotent by construction rather than by a guard: the subquery selects rows still
+-- carrying the OLD slug, so an updated row leaves the set. A re-run updates zero, and
+-- stopping mid-way costs nothing — the next run resumes with what is left.
+UPDATE jobs
+SET company_slug = @canonical_slug,
+    company_slug_folded = replace(@canonical_slug, '-', ''),
+    updated_at = now()
+WHERE jobs.id IN (
+    SELECT j.id
+    FROM jobs j
+    WHERE j.company_slug = @alias_slug
+    ORDER BY j.id
+    LIMIT @chunk_size
+);
+
+-- name: ListCompanySlugAliases :many
+-- The whole registry, folded key to canonical slug. cmd/backfill-derive loads it once per run
+-- and resolves in memory: it re-derives every job in the table, and jobderive is pure, so
+-- without this a backfill would silently move every merged posting back to the spelling its
+-- source happened to use — undoing the merges and taking role_fingerprint, which is computed
+-- from the company slug, with it.
+--
+-- Ordered for the same reason ResolveCompanySlugAliases is: one canonical slug per folded key
+-- is the writer's invariant, and a violation should resolve identically every run.
+SELECT DISTINCT folded_key, canonical_slug
+FROM company_slug_aliases
+ORDER BY folded_key, canonical_slug;
+
+-- name: InsertMissingCanonicalCompanies :execrows
+-- The first half of the merge worker's catalogue reconcile: a companies row for every canonical
+-- slug that holds jobs and has none. A re-key moves jobs onto a canonical slug no crawl has
+-- written yet (the alias spelling was the one the source used), and without a row
+-- GET /companies/<canonical> is a 404 — the very page the alias 301s to.
+--
+-- Scoped to the alias REGISTRY, not to the whole jobs table. The full SyncCompaniesFromJobs
+-- this replaces costs the same on a 20-group wave as on a 20k-group one, and on 2026-10-28 one
+-- held its transaction for 56 minutes while every ingest UpsertJob — which upserts the same
+-- table — queued behind it. This reads only the canonicals that lack a row, through the
+-- company_slug index. The registry rather than the current wave, so a run interrupted before
+-- its reconcile is healed by the next one, whose plan no longer holds the drained slugs.
+--
+-- The name is the most recent one seen for the slug, as ListCompaniesForMerge reads it, so the
+-- row is not named after whichever variant the scan met first. Private rows are skipped: a JD
+-- one user pasted in must not name a public company (see ListSlugLikeCompaniesForBackfill).
+INSERT INTO companies (slug, name)
+SELECT DISTINCT ON (j.company_slug) j.company_slug, j.company
+FROM jobs j
+WHERE NOT j.is_private
+  AND j.company_slug IN (
+    SELECT a.canonical_slug
+    FROM company_slug_aliases a
+    WHERE NOT EXISTS (SELECT 1 FROM companies c WHERE c.slug = a.canonical_slug)
+)
+ORDER BY j.company_slug, j.created_at DESC, j.id DESC
+ON CONFLICT (slug) DO NOTHING;
+
+-- name: DeleteOrphanAliasCompanies :execrows
+-- The second half: drop the companies row of every retired slug that no job carries any more.
+-- Until it is gone GET /companies/<retired> still FINDS a company — one with no jobs — and
+-- answers 200 instead of falling through to the alias lookup and the 301. Scoped to the
+-- registry for the same reason as above; reference rows are kept, as DeleteOrphanCompanies
+-- keeps them.
+DELETE FROM companies c
+USING company_slug_aliases a
+WHERE c.slug = a.alias_slug
+  AND NOT c.is_reference
+  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.company_slug = c.slug);
+
+-- name: InsertDerivedCompanySlugAliases :execrows
+-- Record the redirects cmd/backfill-derive earned when it re-keyed a company whose slug an older
+-- rule had minted from the same name (normalize.SlugPredatesRule) — the retirement
+-- cmd/merge-companies records for a lone company, reached here from the other side. Without
+-- it /companies/<old> serves an empty page for a URL search engines and links still hold.
+--
+-- Arrays of equal length, one alias per index, the caller bounds a chunk. Every guard keeps
+-- the registry's invariants rather than trusting the caller:
+--   * DO NOTHING on alias_slug: the canon freezes at first merge.
+--   * the old slug must not be anyone's canon (a frozen canon never moves),
+--   * the new slug must not itself be retired (no chains: the 301 reads one hop),
+--   * the folded key must not already point at a DIFFERENT canon (one canon per key —
+--     ResolveCompanySlugAliases orders a violation away, it does not prevent it).
+--   * the same two rules hold WITHIN the batch, which the registry checks cannot see.
+--   * the canon must have a companies row, or the 301 lands on a 404 (a canon carried only by
+--     private rows gets none from InsertMissingCompaniesForSlugs).
+--   * the old slug must carry no job at all. The pass decides from the rows IT saw, and a
+--     bounded or stopped one (a window, a resume point, the closed-within cutoff) may not have
+--     seen them all — an unvisited row could be another employer's. Only an emptied slug is
+--     fully accounted for, and a slug still holding rows needs no redirect: its page exists.
+WITH batch AS (
+    SELECT unnest(sqlc.arg(alias_slugs)::text[])     AS alias_slug,
+           unnest(sqlc.arg(canonical_slugs)::text[]) AS canonical_slug,
+           unnest(sqlc.arg(folded_keys)::text[])     AS folded_key
+)
+INSERT INTO company_slug_aliases (alias_slug, canonical_slug, folded_key, reason)
+SELECT a.alias_slug, a.canonical_slug, a.folded_key, 'legal_form'
+FROM batch a
+WHERE a.alias_slug <> a.canonical_slug
+  AND NOT EXISTS (SELECT 1 FROM batch b
+                  WHERE b.canonical_slug = a.alias_slug OR b.alias_slug = a.canonical_slug)
+  AND EXISTS (SELECT 1 FROM companies c WHERE c.slug = a.canonical_slug)
+  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.company_slug = a.alias_slug)
+  AND NOT EXISTS (SELECT 1 FROM company_slug_aliases x WHERE x.canonical_slug = a.alias_slug)
+  AND NOT EXISTS (SELECT 1 FROM company_slug_aliases x WHERE x.alias_slug = a.canonical_slug)
+  AND NOT EXISTS (SELECT 1 FROM company_slug_aliases x
+                  WHERE x.folded_key = a.folded_key AND x.canonical_slug <> a.canonical_slug)
+ON CONFLICT (alias_slug) DO NOTHING;

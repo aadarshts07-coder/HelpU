@@ -1,0 +1,17 @@
+{
+  // SvelteKit 3 generates the base config ($app/tsconfig) — allowJs/checkJs, bundler
+  // resolution, the `#lib` subpath import — so only the project's own strictness lives here.
+  "extends": "$app/tsconfig",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    // Listing `types` at all stops TS from auto-including every `@types/*`
+    // package, so `node` has to be named — dropping it broke ambient `Buffer` in
+    // src/lib/server/og/*.
+    "types": ["$app/types", "node"]
+  },
+  "include": ["src", "e2e", "vite.config.ts", "playwright.config.ts", "playwright.a11y.config.ts"]
+}

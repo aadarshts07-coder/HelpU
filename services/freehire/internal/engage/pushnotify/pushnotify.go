@@ -1,0 +1,363 @@
+// Package pushnotify sends mobile push notifications through the Expo Push API. No
+// APNs/FCM credentials are needed: Expo's relay handles both from one token format. It is a
+// bare send path; retry/backoff belongs to whichever engine adopts push as a channel.
+//
+// Expo's API is two stages. Send's immediate response is a per-message TICKET, not a
+// delivery outcome: a token that just went dead is invisible until Expo attempts delivery,
+// which is only answered later via getReceipts. Send enqueues every successful ticket for a
+// later CheckReceipts pass.
+package pushnotify
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/strelov1/freehire/internal/platform/db"
+)
+
+// ErrTokenPruned is returned by Send when the token turned out dead and was removed
+// instead of anything being delivered. Callers that must tell this apart from a real
+// failure check it with errors.Is.
+var ErrTokenPruned = errors.New("pushnotify: token pruned, not delivered")
+
+// defaultExpoPushURL and defaultExpoReceiptsURL are Expo's two endpoints.
+const (
+	defaultExpoPushURL     = "https://exp.host/--/api/v2/push/send"
+	defaultExpoReceiptsURL = "https://exp.host/--/api/v2/push/getReceipts"
+)
+
+// sendTimeout bounds one round trip to Expo.
+const sendTimeout = 10 * time.Second
+
+// deviceNotRegistered is the Expo error code meaning the OS itself revoked
+// the token (app uninstalled, permission pulled) — Expo will never
+// successfully deliver to it again.
+const deviceNotRegistered = "DeviceNotRegistered"
+
+// receiptStatusOK is the one status that means the message actually arrived. Everything
+// else Expo answers is a refusal carrying a code in Details.Error.
+const receiptStatusOK = "ok"
+
+// receiptMinAgeMinutes is how long a ticket waits in the outbox before its
+// receipt is checked — Expo's own guidance is that delivery through APNs/FCM
+// needs time to resolve, so checking immediately would just find nothing yet.
+const receiptMinAgeMinutes = 15
+
+// receiptBatchSize bounds one CheckReceipts pass. Expo's getReceipts caps a
+// single request at 1000 ids; this stays well under that.
+const receiptBatchSize = 100
+
+// receiptRetention is how long Expo keeps a receipt. A ticket unanswered past it never
+// will be; the claim is oldest-first, so keeping it would starve fresh tickets.
+const receiptRetention = 24 * time.Hour
+
+// Notifier sends one push message to a device token.
+type Notifier interface {
+	Send(ctx context.Context, token, title, body string, data map[string]string) error
+}
+
+// TokenPruner removes a token that's been reported permanently
+// undeliverable. *db.Queries satisfies this via its generated
+// PruneDeadPushToken method.
+type TokenPruner interface {
+	PruneDeadPushToken(ctx context.Context, token string) error
+}
+
+// TicketQueuer queues a successfully-sent ticket for a later receipt check.
+type TicketQueuer interface {
+	EnqueuePushTicket(ctx context.Context, token, ticketID string) error
+}
+
+// Ticket is one queued send ticket awaiting a receipt check.
+type Ticket struct {
+	ID        int64
+	Token     string
+	TicketID  string
+	CreatedAt time.Time
+}
+
+// TicketStore is the outbox CheckReceipts drains.
+type TicketStore interface {
+	// ClaimDuePushTickets returns tickets at least minAgeMinutes old, oldest
+	// first, up to batchSize.
+	ClaimDuePushTickets(ctx context.Context, minAgeMinutes, batchSize int32) ([]Ticket, error)
+	// DeletePushTickets removes tickets whose receipt has been checked,
+	// regardless of outcome — this queue has no retry bookkeeping of its own.
+	DeletePushTickets(ctx context.Context, ids []int64) error
+}
+
+// SendToDevices sends one title/body/data message to every token, for a recipient with
+// several devices. It returns nil if at least one device received the message; a pruned
+// token is not itself a failure, but if every device is pruned or erroring (or there are no
+// tokens) the caller gets an error.
+func SendToDevices(ctx context.Context, notifier Notifier, tokens []string, title, body string, data map[string]string) error {
+	var sent int
+	var lastErr error
+	for _, token := range tokens {
+		if err := notifier.Send(ctx, token, title, body, data); err != nil {
+			lastErr = err
+		} else {
+			sent++
+		}
+	}
+	if sent > 0 {
+		return nil
+	}
+	if lastErr != nil {
+		return fmt.Errorf("pushnotify: no device received the message: %w", lastErr)
+	}
+	return errors.New("pushnotify: no device to send to")
+}
+
+// TokenLister lists a user's registered push devices. *db.Queries satisfies it.
+type TokenLister interface {
+	ListPushTokensForUser(ctx context.Context, userID int64) ([]db.UserPushToken, error)
+}
+
+// UserSender resolves a user id to the user's registered devices and fans one
+// message out to all of them. It is the push half shared by every engine's
+// PushNotifier; the engines differ only in how they render title/body/data.
+type UserSender struct {
+	tokens    TokenLister
+	transport Notifier
+}
+
+// NewUserSender builds a UserSender listing devices through tokens and sending
+// through transport.
+func NewUserSender(tokens TokenLister, transport Notifier) *UserSender {
+	return &UserSender{tokens: tokens, transport: transport}
+}
+
+// Send parses dest as a user id, lists that user's devices and delivers the
+// message to them via SendToDevices.
+func (s *UserSender) Send(ctx context.Context, dest, title, body string, data map[string]string) error {
+	userID, err := strconv.ParseInt(dest, 10, 64)
+	if err != nil {
+		return fmt.Errorf("pushnotify: invalid push user id %q: %w", dest, err)
+	}
+	rows, err := s.tokens.ListPushTokensForUser(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("pushnotify: list push tokens for user %d: %w", userID, err)
+	}
+	tokens := make([]string, len(rows))
+	for i, row := range rows {
+		tokens[i] = row.Token
+	}
+	return SendToDevices(ctx, s.transport, tokens, title, body, data)
+}
+
+// ExpoNotifier implements Notifier over the Expo Push API.
+type ExpoNotifier struct {
+	client      *http.Client
+	pruner      TokenPruner
+	queuer      TicketQueuer
+	tickets     TicketStore
+	apiURL      string
+	receiptsURL string
+	now         func() time.Time
+}
+
+// NewExpoNotifier returns a Notifier that sends through Expo's push API,
+// queuing every successful send (via queuer) for a later CheckReceipts pass
+// (drained from tickets), and pruning (via pruner) any token a receipt or an
+// immediate send ticket reports as permanently dead.
+func NewExpoNotifier(pruner TokenPruner, queuer TicketQueuer, tickets TicketStore) *ExpoNotifier {
+	return &ExpoNotifier{
+		client:      &http.Client{Timeout: sendTimeout},
+		pruner:      pruner,
+		queuer:      queuer,
+		tickets:     tickets,
+		apiURL:      defaultExpoPushURL,
+		receiptsURL: defaultExpoReceiptsURL,
+		now:         time.Now,
+	}
+}
+
+type expoMessage struct {
+	To    string            `json:"to"`
+	Title string            `json:"title"`
+	Body  string            `json:"body"`
+	Data  map[string]string `json:"data,omitempty"`
+}
+
+// expoTicket is one entry in Send's response — an immediate acknowledgement,
+// not a final delivery outcome (see the package doc).
+type expoTicket struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Details struct {
+		Error string `json:"error"`
+	} `json:"details"`
+}
+
+type expoSendResponse struct {
+	Data []expoTicket `json:"data"`
+}
+
+// Send posts one message to Expo's push API. A ticket already reporting
+// DeviceNotRegistered prunes the token immediately and reports success
+// (there's nothing left to check later); an `ok` ticket is queued for a
+// later CheckReceipts pass, since the ticket alone doesn't say the push was
+// actually delivered; any other failure is returned as an error with the
+// token left in place, since it may be transient.
+func (n *ExpoNotifier) Send(ctx context.Context, token, title, body string, data map[string]string) error {
+	var out expoSendResponse
+	if err := n.postJSON(ctx, n.apiURL, []expoMessage{{To: token, Title: title, Body: body, Data: data}}, &out); err != nil {
+		return err
+	}
+	if len(out.Data) != 1 {
+		return fmt.Errorf("pushnotify: expo returned %d tickets, want 1", len(out.Data))
+	}
+
+	ticket := out.Data[0]
+	if ticket.Status == receiptStatusOK {
+		if err := n.queuer.EnqueuePushTicket(ctx, token, ticket.ID); err != nil {
+			return fmt.Errorf("pushnotify: enqueue ticket: %w", err)
+		}
+		return nil
+	}
+	if ticket.Details.Error == deviceNotRegistered {
+		if err := n.pruner.PruneDeadPushToken(ctx, token); err != nil {
+			return fmt.Errorf("pushnotify: prune dead token: %w", err)
+		}
+		return ErrTokenPruned
+	}
+	return fmt.Errorf("pushnotify: expo: %s (%s)", ticket.Message, ticket.Details.Error)
+}
+
+// expoReceiptsResponse is getReceipts' shape: a map keyed by ticket id,
+// unlike Send's positional array.
+type expoReceiptsResponse struct {
+	Data map[string]expoTicket `json:"data"`
+}
+
+// CheckReceipts claims a batch of tickets old enough for Expo to have a
+// delivery answer, checks them, prunes any token a receipt reports
+// DeviceNotRegistered, and removes every checked ticket from the outbox
+// regardless of outcome. Intended to run on a schedule (cmd/push-receipts).
+//
+// The deletion is deliberate and the receipt is the only copy of the answer, so every
+// outcome is counted and every unhappy one logged with the status and error Expo gave;
+// otherwise a systematically failing push (bad credential, rejected payload) leaves no
+// trace.
+func (n *ExpoNotifier) CheckReceipts(ctx context.Context) error {
+	due, err := n.tickets.ClaimDuePushTickets(ctx, receiptMinAgeMinutes, receiptBatchSize)
+	if err != nil {
+		return fmt.Errorf("pushnotify: claim due tickets: %w", err)
+	}
+	if len(due) == 0 {
+		return nil
+	}
+
+	ids := make([]string, len(due))
+	for i, t := range due {
+		ids[i] = t.TicketID
+	}
+	receipts, err := n.getReceipts(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("pushnotify: get receipts: %w", err)
+	}
+
+	processed := make([]int64, 0, len(due))
+	var pruneErrs []error
+	// The six outcomes below must add up to the batch; pruneFailed is one so a failed prune
+	// does not leave the counters totalling less than checked. The error is returned too, but a
+	// prune that fails every pass only shows in the aggregate.
+	var delivered, pruned, pruneFailed, rejected, unanswered, expired int
+	for _, t := range due {
+		r, ok := receipts[t.TicketID]
+		if !ok && n.now().Sub(t.CreatedAt) > receiptRetention {
+			// Expo no longer holds an answer for it, so there is nothing left to wait for:
+			// remove it, and say so, rather than keep it at the head of the queue forever.
+			expired++
+			processed = append(processed, t.ID)
+			continue
+		}
+		if !ok {
+			// No answer yet (or Expo no longer recognizes the id): the ticket stays queued for the
+			// next pass.
+			unanswered++
+			continue
+		}
+		switch {
+		case r.Details.Error == deviceNotRegistered:
+			if err := n.pruner.PruneDeadPushToken(ctx, t.Token); err != nil {
+				// Keep going rather than returning: earlier tickets in this batch may be resolved, and
+				// bailing out would skip DeletePushTickets. This ticket is left out of processed, so it
+				// stays queued and the prune is retried next pass.
+				pruneErrs = append(pruneErrs, fmt.Errorf("prune dead token: %w", err))
+				pruneFailed++
+				continue
+			}
+			pruned++
+		case r.Status == receiptStatusOK:
+			delivered++
+		default:
+			// Not actionable per ticket, but a repeated code across a batch is how a broken payload
+			// or credential announces itself.
+			rejected++
+			log.Printf("pushnotify: receipt %s: status=%q error=%q message=%q",
+				t.TicketID, r.Status, r.Details.Error, r.Message)
+		}
+		processed = append(processed, t.ID)
+	}
+	log.Printf("pushnotify: receipts checked=%d delivered=%d pruned=%d prune_failed=%d rejected=%d unanswered=%d expired=%d",
+		len(due), delivered, pruned, pruneFailed, rejected, unanswered, expired)
+
+	if len(processed) > 0 {
+		if err := n.tickets.DeletePushTickets(ctx, processed); err != nil {
+			return fmt.Errorf("pushnotify: delete processed tickets: %w", err)
+		}
+	}
+	if err := errors.Join(pruneErrs...); err != nil {
+		return fmt.Errorf("pushnotify: %w", err)
+	}
+	return nil
+}
+
+func (n *ExpoNotifier) getReceipts(ctx context.Context, ticketIDs []string) (map[string]expoTicket, error) {
+	var out expoReceiptsResponse
+	if err := n.postJSON(ctx, n.receiptsURL, map[string][]string{"ids": ticketIDs}, &out); err != nil {
+		return nil, err
+	}
+	return out.Data, nil
+}
+
+// postJSON POSTs payload as JSON to url and decodes the JSON response into out. Shared
+// by Send and getReceipts.
+func (n *ExpoNotifier) postJSON(ctx context.Context, url string, payload, out any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("pushnotify: encode request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("pushnotify: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("pushnotify: send: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("pushnotify: expo: %s", resp.Status)
+	}
+
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
+		return fmt.Errorf("pushnotify: decode response: %w", err)
+	}
+	return nil
+}

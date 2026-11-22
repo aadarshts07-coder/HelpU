@@ -1,0 +1,344 @@
+<script lang="ts">
+  import { APP_STORE_URL } from '#lib/appLinks.js';
+  import { resolve } from '$app/paths';
+  import { Trophy } from '@lucide/svelte';
+  import { reopen } from '#lib/consent.svelte.js';
+  import { EXTENSION_FIREFOX_URL, EXTENSION_STORE_URL } from '#lib/extensionLinks.js';
+  import { POPULAR_COLLECTIONS } from '#lib/popularCollections.js';
+  import { SOCIAL_LINKS } from '#lib/socialLinks.js';
+  import { ProviderIcon } from '#lib/ui/index.js';
+
+  // Grouped navigation over existing routes only — kept deliberately small so the
+  // footer stays uncluttered. Internal links go through resolve() (base-path safe),
+  // mirroring the header.
+  const groups = [
+    {
+      title: 'Product',
+      links: [
+        { label: 'Jobs', href: resolve('/jobs') },
+        { label: 'Companies', href: resolve('/companies') },
+        { label: 'Collections', href: resolve('/collections') },
+        { label: 'Talent Network', href: resolve('/talent') },
+        { label: 'Jobs by role', href: resolve('/roles') },
+        { label: 'Pricing', href: resolve('/pricing') },
+        // The glossary's only link from the app — the chip's reveal opens on
+        // interaction and the sitemap is for crawlers, so this is the one path a
+        // reader browsing the site can follow to it.
+        { label: 'Skills glossary', href: resolve('/skills') },
+        { label: 'Dictionary', href: resolve('/dictionary') },
+        { label: 'Recruiters', href: resolve('/recruiters') },
+      ],
+    },
+    {
+      title: 'Features',
+      links: [
+        { label: 'Advanced search', href: resolve('/features/advanced-search') },
+        { label: 'Browser extension', href: resolve('/features/extension') },
+        { label: 'Inbox', href: resolve('/features/inbox') },
+        { label: 'CV tailoring', href: resolve('/features/tailor') },
+        { label: 'Application tracking', href: resolve('/features/tracking') },
+        { label: 'Notifications', href: resolve('/features/notifications') },
+        { label: 'Referrals', href: resolve('/features/referrals') },
+        { label: 'Interview buddies', href: resolve('/features/interview-buddies') },
+        { label: 'Ghost jobs', href: resolve('/features/ghost-jobs') },
+      ],
+    },
+    {
+      title: 'Resources',
+      links: [
+        { label: 'How it works', href: resolve('/how-it-works') },
+        { label: 'Discussions', href: resolve('/discussions') },
+        { label: 'Blog', href: resolve('/blog') },
+        { label: 'Insights', href: resolve('/insights') },
+        { label: 'Salaries', href: resolve('/salaries') },
+        { label: 'Salary analytics', href: resolve('/analytics') },
+        { label: 'Hiring signal', href: resolve('/insights/companies') },
+        { label: 'Trends', href: resolve('/trends') },
+        { label: 'For AI agents', href: resolve('/agents') },
+        { label: 'MCP', href: resolve('/mcp') },
+        { label: 'CLI', href: resolve('/cli') },
+        { label: 'ChatGPT', href: resolve('/chatgpt') },
+        { label: 'API docs', href: resolve('/docs/api') },
+        { label: 'Jobs API', href: resolve('/jobs-api') },
+      ],
+    },
+    {
+      title: 'Company',
+      links: [
+        { label: 'About', href: resolve('/about') },
+        { label: 'Open', href: resolve('/open') },
+        { label: 'For companies', href: resolve('/for-companies') },
+        { label: 'Contribute', href: resolve('/contribute') },
+        // Next to Contribute rather than under Resources: the two are one thought —
+        // here is how to help, and here is everyone who did.
+        { label: 'Contributors', href: resolve('/contributors') },
+        { label: 'Submit a job', href: resolve('/submit') },
+        // Next to Status rather than under Resources: the two answer neighbouring
+        // questions — where the jobs come from, and whether we are still reading them.
+        { label: 'Sources', href: resolve('/sources') },
+        { label: 'Status', href: resolve('/status') },
+        { label: 'Support', href: resolve('/support') },
+        { label: 'Privacy', href: resolve('/privacy') },
+        { label: 'Terms', href: resolve('/terms') },
+        { label: 'Job removal', href: resolve('/job-removal') },
+      ],
+    },
+  ];
+
+  // External profiles: open in a new tab, each rendered with its ProviderIcon brand
+  // mark. All follow the muted text colour (so they match and hover works). Shared
+  // with the /signin brand panel — see #lib/socialLinks.
+
+  // A strip below the four groups rather than a fifth column: the grid is
+  // sm:grid-cols-4, and ten links would not fit one anyway. Kept out of `groups`
+  // because these are collection landing pages, not site navigation — and because
+  // it is the one place every page links them from (see #lib/popularCollections).
+  const popular = POPULAR_COLLECTIONS;
+
+  const year = new Date().getFullYear();
+
+  const compactLinks = [
+    { label: 'Jobs', href: resolve('/jobs') },
+    { label: 'Pricing', href: resolve('/pricing') },
+    { label: 'Jobs API', href: resolve('/jobs-api') },
+    { label: 'Support', href: resolve('/support') },
+    { label: 'Status', href: resolve('/status') },
+    { label: 'Privacy', href: resolve('/privacy') },
+    { label: 'Terms', href: resolve('/terms') },
+  ];
+
+  // Product Hunt "featured" badge. Two embed URLs — one per theme — swapped by the
+  // `dark` class variant rather than by reading themeStore, so the right one is
+  // already in the SSR markup (the anti-FOUC script in app.html sets `.dark` before
+  // paint). Both URLs are Product Hunt's own, copied verbatim including the `t=`
+  // cache-buster it stamps per variant.
+  const productHunt = {
+    href: 'https://www.producthunt.com/products/freehire?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-freehire',
+    alt: 'freehire - The open-source job search that covers every board | Product Hunt',
+    light:
+      'https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1196233&theme=light&t=1785605037608',
+    dark: 'https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1196233&theme=dark&t=1785605357228',
+  };
+
+  // Where the product can be installed, beside the Product Hunt badge rather than in
+  // a link column: these are downloads, not navigation, and a store button among a
+  // list of page links reads as neither.
+  //
+  // Drawn from the design system's own marks and tokens instead of each store's
+  // official badge artwork — the two vendors' badges disagree about height, corner
+  // radius and dark-mode treatment, so side by side they look like two pasted
+  // screenshots. One shape in the site's own colours matches the footer around it
+  // and follows the theme without a second asset per mode; ProviderIcon already
+  // ships both marks, so this needs no image at all.
+  //
+  // Neither store URL is spelled here: #lib/extensionLinks and #lib/appLinks own them,
+  // since the extension landing and the onboarding tour link the same listings.
+  const stores = [
+    {
+      provider: 'apple',
+      kicker: 'Download on the',
+      name: 'App Store',
+      href: APP_STORE_URL,
+    },
+    {
+      provider: 'chrome',
+      kicker: 'Available in the',
+      name: 'Chrome Web Store',
+      href: EXTENSION_STORE_URL,
+    },
+    {
+      provider: 'firefox',
+      kicker: 'Get the add-on for',
+      name: 'Firefox',
+      href: EXTENSION_FIREFOX_URL,
+    },
+  ];
+
+  // Compact: the account shell (/my/*) is an app-like surface with its own sidebar
+  // nav, so the four link columns, the popular-collections strip and the Product
+  // Hunt badge below give way to a short list of essential site links and the
+  // bottom bar (copyright, cookie settings, social links, open-source note).
+  // Full-bleed account routes (/my/assistant/*, /tailor/*) render no
+  // footer at all, compact or otherwise — see routes/+layout.svelte's hideFooter.
+  let { compact = false }: { compact?: boolean } = $props();
+</script>
+
+<footer class="border-t border-border">
+  {#if !compact}
+    <div class="mx-auto max-w-6xl px-4 py-8 sm:py-12">
+      <div class="grid grid-cols-2 gap-x-6 gap-y-7 sm:grid-cols-4 sm:gap-6">
+        <!-- Navigation groups. Each is a named landmark (aria-label) so screen readers
+             get a title without adding headings to the page outline. -->
+        {#each groups as group (group.title)}
+          <nav class="flex flex-col gap-3" aria-label={group.title}>
+            <p class="text-xs font-medium text-muted-foreground">
+              {group.title}
+            </p>
+            <ul class="flex flex-col gap-2">
+              {#each group.links as link (link.href)}
+                <li>
+                  <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- internal route already passed through resolve() when building `groups`; the linter can't trace it via the variable -->
+                  <a href={link.href} class="text-sm text-muted-foreground transition-colors hover:text-foreground">
+                    {link.label}
+                  </a>
+                </li>
+              {/each}
+            </ul>
+          </nav>
+        {/each}
+      </div>
+
+      <!-- Popular collections. Real <a href> in the server-rendered HTML: crawlers
+           discover links by parsing markup, and these landing pages had none from the
+           homepage at all. -->
+      <nav class="mt-8 border-t border-border pt-6" aria-label="Popular collections">
+        <p class="text-xs font-medium text-muted-foreground">Popular</p>
+        <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-2">
+          {#each popular as collection (collection.slug)}
+            <li>
+              <a
+                href={resolve('/collections/[slug]', { slug: collection.slug })}
+                class="text-sm text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {collection.title}
+              </a>
+            </li>
+          {/each}
+        </ul>
+      </nav>
+
+      <!-- The badge and the store buttons are one size, w-64 h-14 (256x56): the
+           badge is a 250x54 image, so object-contain scales it to the box instead
+           of an arbitrary h-[54px], which check:tokens refuses. They never wrap: a wide
+           viewport splits one row into five equal columns; a narrower one scrolls them
+           sideways as a carousel, bleeding to the screen edge. -->
+      <div
+        class="-mx-4 mt-8 flex snap-x snap-mandatory scroll-px-4 gap-3 overflow-x-auto px-4 xl:mx-0 xl:grid xl:grid-cols-5 xl:overflow-visible xl:px-0"
+      >
+        <!-- Greyed until hovered: in full colour the red badge was the loudest thing in the footer. -->
+        <!-- eslint-disable svelte/no-navigation-without-resolve -- external Product Hunt page opened in a new tab; not an internal route -->
+        <a
+          href={productHunt.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="h-14 w-64 shrink-0 xl:w-auto snap-start opacity-70 grayscale transition hover:opacity-100 hover:grayscale-0 focus-visible:opacity-100 focus-visible:grayscale-0"
+        >
+          <img
+            src={productHunt.light}
+            alt={productHunt.alt}
+            width="250"
+            height="54"
+            loading="lazy"
+            class="size-full object-contain dark:hidden"
+          />
+          <img
+            src={productHunt.dark}
+            alt={productHunt.alt}
+            width="250"
+            height="54"
+            loading="lazy"
+            class="hidden size-full object-contain dark:block"
+          />
+        </a><!-- eslint-enable svelte/no-navigation-without-resolve -->
+
+        <!-- Datacircle's benchmark ranking, drawn like the store buttons: their own badge
+             is a 240x162 card that does not fit this strip. shortcut: "#1" is typed here
+             (as in /jobs-api's static/brands/datacircle-ranked.svg); change both if the
+             ranking moves. -->
+        <!-- eslint-disable svelte/no-navigation-without-resolve -- external ranking page opened in a new tab; not an internal route -->
+        <a
+          href="https://datacircle.dev/best-full-job-posting-api"
+          target="_blank"
+          rel="noopener"
+          class="inline-flex h-14 w-64 shrink-0 xl:w-auto snap-start items-center gap-3 rounded-lg border border-border px-4 text-foreground transition-colors hover:bg-muted"
+        >
+          <Trophy class="size-7 shrink-0" aria-hidden="true" />
+          <span class="flex flex-col leading-tight">
+            <span class="text-xs text-muted-foreground">Ranked by Datacircle</span>
+            <span class="text-sm font-semibold">#1 Job Postings API</span>
+          </span>
+        </a><!-- eslint-enable svelte/no-navigation-without-resolve -->
+
+        {#each stores as store (store.href)}
+          <!-- eslint-disable svelte/no-navigation-without-resolve -- external store listing opened in a new tab; not an internal route -->
+          <a
+            href={store.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="inline-flex h-14 w-64 shrink-0 xl:w-auto snap-start items-center gap-3 rounded-lg border border-border px-4 text-foreground transition-colors hover:bg-muted"
+          >
+            <ProviderIcon provider={store.provider} class="size-7 shrink-0" />
+            <span class="flex flex-col leading-tight">
+              <span class="text-xs text-muted-foreground">
+                {store.kicker}
+              </span>
+              <span class="text-sm font-semibold">{store.name}</span>
+            </span>
+          </a><!-- eslint-enable svelte/no-navigation-without-resolve -->
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  {#if compact}
+    <nav class="mx-auto max-w-6xl px-4 pt-4" aria-label="Essential links">
+      <ul class="flex flex-wrap gap-x-5 gap-y-1">
+        {#each compactLinks as link (link.href)}
+          <li>
+            <!-- eslint-disable svelte/no-navigation-without-resolve -- internal route already passed through resolve() in compactLinks -->
+            <a
+              href={link.href}
+              class="inline-flex min-h-8 items-center rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              {link.label}
+            </a><!-- eslint-enable svelte/no-navigation-without-resolve -->
+          </li>
+        {/each}
+      </ul>
+    </nav>
+  {/if}
+
+  <!-- Bottom bar: copyright + social links on the left, open-source note on the
+       right. Split off by its own top border only when it follows the link
+       groups above — compact, the footer's own top border already does that job. -->
+  <div class={compact ? undefined : 'border-t border-border'}>
+    <div
+      class="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-4 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:gap-1"
+    >
+      <div class="flex items-center gap-4">
+        <p>© {year}</p>
+        <!-- Re-opens the consent banner so a prior cookie choice can be changed —
+             withdrawal as easy as granting (GDPR). -->
+        <button type="button" onclick={reopen} class="text-muted-foreground transition-colors hover:text-foreground">
+          Cookie settings
+        </button>
+        <div class="flex items-center gap-3">
+          {#each SOCIAL_LINKS as social (social.provider)}
+            <!-- eslint-disable svelte/no-navigation-without-resolve -- external profile URL opened in a new tab; not an internal route -->
+            <a
+              href={social.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={social.label}
+              class="text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <ProviderIcon provider={social.provider} />
+            </a><!-- eslint-enable svelte/no-navigation-without-resolve -->
+          {/each}
+        </div>
+      </div>
+      <p>
+        Free &amp; open-source.
+        <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- external repository URL opened in a new tab; not an internal route -->
+        <a
+          href="https://github.com/strelov1/freehire"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="font-medium text-foreground transition-colors hover:text-muted-foreground"
+        >
+          View source on GitHub
+        </a>.
+      </p>
+    </div>
+  </div>
+</footer>

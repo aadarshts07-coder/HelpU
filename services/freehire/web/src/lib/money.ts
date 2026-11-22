@@ -1,0 +1,53 @@
+/** Render an amount the payment provider gave us in MINOR UNITS.
+ *
+ *  How many minor units make one unit is a property of the CURRENCY, not a constant: 100 for
+ *  dollars and euros, 1 for yen, 1000 for dinars. Dividing by 100 unconditionally renders
+ *  ¥1000 as ¥10 — an error of a hundredfold, on a screen about somebody's money, in their
+ *  favour and therefore unlikely to be reported.
+ *
+ *  `Intl` already knows each currency's exponent, so it is asked rather than tabulated here:
+ *  a table would be a second source of truth about currencies, and it would be wrong for
+ *  whichever one nobody thought of.
+ *
+ *  It lives here rather than beside either caller because both the pricing page and the
+ *  subscription section render money, and two copies of a money rule is the shape that
+ *  eventually shows two different prices for one product. */
+/** The currencies Stripe encodes with two implied decimals even though they HAVE none.
+ *
+ *  This is not a fact about the currency — Intl is right that ISK and UGX take no
+ *  fraction — it is a fact about the PROVIDER, which requires their amounts as a multiple
+ *  of 100 and hands back 500 for five krónur. Intl cannot know that, so it is the one thing
+ *  the comment above is wrong to leave to it. Getting it from Intl anyway prints kr 500 for
+ *  a kr 5 charge: a hundredfold error against the customer, on the receipt list. */
+const STRIPE_HUNDREDFOLD = new Set(['ISK', 'UGX']);
+
+export function minorUnitsValue(minor: number, currency: string): number {
+  const code = currency.toUpperCase();
+  const fmt = new Intl.NumberFormat('en', { style: 'currency', currency: code });
+  const exponent = STRIPE_HUNDREDFOLD.has(code) ? 2 : (fmt.resolvedOptions().maximumFractionDigits ?? 2);
+  return minor / 10 ** exponent;
+}
+
+// `locale` defaults to the runtime's own. A caller whose text is rendered on the server
+// and hydrated in the browser passes one, since the two runtimes need not share a locale.
+// `trimWhole` drops a zero fraction ("$5", not "$5.00") for a price headline; amounts that
+// carry cents keep them.
+export function formatMinorUnits(
+  minor: number,
+  currency: string,
+  locale?: string,
+  { trimWhole = false }: { trimWhole?: boolean } = {},
+): string {
+  const code = (currency || 'usd').toUpperCase();
+  const fmt = new Intl.NumberFormat(locale, { style: 'currency', currency: code });
+  const value = minorUnitsValue(minor, code);
+  if (trimWhole && Number.isInteger(value)) {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: code,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(value);
+  }
+  return fmt.format(value);
+}

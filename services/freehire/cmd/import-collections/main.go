@@ -1,0 +1,522 @@
+// Command import-collections populates the company-tag membership defined in
+// internal/job/collections. For each entry it resolves the member companies (a static hand
+// list, a remote dataset, or a public register), matches them onto our companies, applies
+// the entry's gate, writes companies.collections (reconciling only the tags it manages),
+// then denormalizes onto jobs.collections. Run-once-and-exit; a search reindex is required
+// afterwards to surface the changes.
+//
+// Idempotent: re-running with the same inputs writes the same membership and
+// changes nothing on the second pass.
+//
+// Three guards stand against a broken source reconciling a tag off every holder. A failed
+// fetch or resolve, or a payload that parses to no records, drops THAT collection from the
+// run: its tags stay as stored, the others still import, and the run exits non-zero. A tag
+// that would lose most of its holders aborts the whole run before it writes (an upstream
+// relabelling keeps the row count but matches nobody); override with -force when the loss
+// is correct.
+//
+// Run with -dry-run first when a gate or threshold has changed: it does everything but write.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/strelov1/freehire/internal/job/collections"
+	"github.com/strelov1/freehire/internal/platform/db"
+	"github.com/strelov1/freehire/internal/platform/safehttp"
+	"github.com/strelov1/freehire/internal/platform/scraplingfetch"
+	"github.com/strelov1/freehire/internal/platform/worker"
+)
+
+// fetchTimeout bounds each dataset download so a stalled endpoint can't hang the run.
+const fetchTimeout = 60 * time.Second
+
+// maxDatasetBody bounds how many bytes fetchDataset reads from one response. Datasets are a
+// few MiB, but URLs can be overridden via <SLUG>_DATASET_URL or resolved from a third-party
+// site, and an unattended run must not buffer an unbounded response.
+const maxDatasetBody = 32 << 20 // 32 MiB
+
+// dryRun resolves, matches, and gates exactly as a real run does, reports what it
+// would write, and writes nothing.
+var (
+	dryRun = flag.Bool("dry-run", false, "resolve and match, report the outcome, write nothing")
+	// force overrides the collapse guard, for the rare run where a tag genuinely
+	// should lose most of its holders (retiring a collection, a real register purge).
+	force = flag.Bool("force", false, "write even when a tag would lose most of its holders")
+	// only limits a run to the named collections, leaving every other tag as stored, so one
+	// upstream being down does not block the rest.
+	only = flag.String("only", "", "comma-separated collection slugs to import; others are left untouched")
+)
+
+func main() {
+	flag.Parse()
+	worker.Main(run)
+}
+
+func run() int {
+	ctx, _, pool, cleanup, err := worker.Bootstrap(context.Background())
+	if err != nil {
+		log.Printf("database: %v", err)
+		return 1
+	}
+	defer cleanup()
+
+	// Resolve every collection's candidates up front. A collection whose source fails is left
+	// out entirely (not matched, not reconciled) so a transient fetch error cannot wipe its
+	// membership; the rest still import and the run exits non-zero.
+	scope, err := scopeOf(*only)
+	if err != nil {
+		log.Printf("import-collections: %v", err)
+		return 1
+	}
+	resolved, failed, err := resolveAll(ctx, scope)
+	if err != nil {
+		log.Printf("import-collections: %v", err)
+		return 1
+	}
+	for _, f := range failed {
+		log.Printf("import-collections: SKIPPED %s, its tags are left as stored: %v", f.slug, f.err)
+	}
+	scope = withoutFailed(scope, failed)
+	if len(scope) == 0 {
+		log.Printf("import-collections: every collection in scope failed to resolve, nothing to do")
+		return 1
+	}
+	exitCode := 0
+	if len(failed) > 0 {
+		exitCode = 1
+	}
+
+	q := db.New(pool)
+	rows, err := q.ListCompanyCollections(ctx)
+	if err != nil {
+		log.Printf("import-collections: list companies: %v", err)
+		return 1
+	}
+
+	p := planScoped(rows, resolved, scope)
+
+	// A dry run stops here, before the first write, so gate thresholds can be checked against
+	// the real catalogue first (the single-token rule leans on a possibly sparse hq_country).
+	if *dryRun {
+		report(p, len(rows), scope)
+		for _, c := range p.collapsed {
+			log.Printf("import-collections: WOULD COLLAPSE %s — %d holders, %d would survive", c.slug, c.had, c.keeps)
+		}
+		log.Printf("import-collections: dry run — %d companies would be updated, nothing written", len(p.writes))
+		return exitCode
+	}
+
+	// A tag losing most of its holders in one run is a broken source. The fetch and
+	// empty-parse aborts cannot see it (relabelled values still parse to the full row count).
+	// Stop before writing and make a human confirm.
+	if len(p.collapsed) > 0 && !*force {
+		for _, c := range p.collapsed {
+			log.Printf("import-collections: %s would drop from %d holders to %d", c.slug, c.had, c.keeps)
+		}
+		log.Printf("import-collections: aborting before write — re-run with -dry-run to inspect, or -force if this is genuinely correct")
+		return 1
+	}
+
+	for _, w := range p.writes {
+		if err := q.SetCompanyCollections(ctx, w); err != nil {
+			log.Printf("import-collections: set %q: %v", w.Slug, err)
+			return 1
+		}
+	}
+
+	propagated, err := propagate(ctx, q)
+	if err != nil {
+		log.Printf("import-collections: propagate to jobs: %v", err)
+		return 1
+	}
+
+	report(p, len(rows), scope)
+	log.Printf("import-collections done: companies updated=%d, jobs updated=%d", len(p.writes), propagated)
+	log.Printf("import-collections: run `make reindex` to surface jobs.collections in the search index")
+	if exitCode != 0 {
+		log.Printf("import-collections: %d collection(s) skipped, see SKIPPED above", len(failed))
+	}
+	return exitCode
+}
+
+// report logs how each collection's candidates fell out. Credentials also report what their
+// gate and ambiguity guard rejected, and how densely hq_country is populated.
+func report(p planResult, companies int, scope []collections.Collection) {
+	for _, c := range scope {
+		s := p.stats[c.Slug]
+		if c.Kind == collections.KindCredential {
+			log.Printf("import-collections: %s matched=%d gated=%d ambiguous=%d mismatch=%d unmatched=%d",
+				c.Slug, s.Matched, s.Gated, s.Ambiguous, s.Mismatch, s.Unmatched)
+			continue
+		}
+		log.Printf("import-collections: %s matched=%d mismatch=%d unmatched=%d",
+			c.Slug, s.Matched, s.Mismatch, s.Unmatched)
+		if len(s.MismatchNames) > 0 {
+			log.Printf("import-collections: %s refused as a different organisation: %s", c.Slug, strings.Join(s.MismatchNames, "; "))
+		}
+		// Unmatched hand-list entries are actionable (a typo or a company that left), so list
+		// them; a fetched dataset has thousands, so only its count is logged.
+		if len(s.UnmatchedNames) > 0 {
+			log.Printf("import-collections: %s unmatched entries: %s", c.Slug, strings.Join(s.UnmatchedNames, ", "))
+		}
+	}
+	log.Printf("import-collections: hq_country known for %d/%d companies (the single-token credential rule depends on it)",
+		p.withHQCountry, companies)
+}
+
+// scopeOf turns the -only value into the collections a run handles: all when empty, else
+// the named ones, refusing an unknown slug rather than silently importing less.
+func scopeOf(only string) ([]collections.Collection, error) {
+	if strings.TrimSpace(only) == "" {
+		return collections.All, nil
+	}
+	var scope []collections.Collection
+	for _, slug := range strings.Split(only, ",") {
+		c, ok := collections.Lookup(strings.TrimSpace(slug))
+		if !ok {
+			return nil, fmt.Errorf("-only: unknown collection %q", slug)
+		}
+		scope = append(scope, c)
+	}
+	return scope, nil
+}
+
+// resolveAll returns, per collection slug, its candidate company names (or slugs for a hand
+// list), plus the collections whose source failed. Only a misconfigured proxy is an error
+// for the whole run.
+func resolveAll(ctx context.Context, scope []collections.Collection) (map[string][]collections.Record, []resolveFailure, error) {
+	direct := &http.Client{Timeout: fetchTimeout}
+	proxied, err := proxiedClient(fetchTimeout)
+	if err != nil {
+		return nil, nil, err
+	}
+	resolved, failed := resolveEach(scope, func(c collections.Collection) ([]collections.Record, error) {
+		return resolveOne(ctx, clientFor(c.Slug, direct, proxied), c)
+	})
+	return resolved, failed, nil
+}
+
+// resolveFailure is one collection whose source could not be read this run.
+type resolveFailure struct {
+	slug string
+	err  error
+}
+
+// resolveEach resolves every collection in scope, collecting failures instead of stopping.
+func resolveEach(scope []collections.Collection, resolve func(collections.Collection) ([]collections.Record, error)) (map[string][]collections.Record, []resolveFailure) {
+	resolved := make(map[string][]collections.Record, len(scope))
+	var failed []resolveFailure
+	for _, c := range scope {
+		records, err := resolve(c)
+		if err != nil {
+			failed = append(failed, resolveFailure{slug: c.Slug, err: err})
+			continue
+		}
+		resolved[c.Slug] = records
+	}
+	return resolved, failed
+}
+
+// withoutFailed narrows scope to the collections that resolved, so planScoped
+// neither matches nor reconciles a failed one and its stored tags survive.
+func withoutFailed(scope []collections.Collection, failed []resolveFailure) []collections.Collection {
+	if len(failed) == 0 {
+		return scope
+	}
+	skip := make(map[string]bool, len(failed))
+	for _, f := range failed {
+		skip[f.slug] = true
+	}
+	out := make([]collections.Collection, 0, len(scope))
+	for _, c := range scope {
+		if !skip[c.Slug] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// proxiedCollectionSlugs are collections whose register refuses a plain client: uscis.gov's
+// Akamai 403s direct, SOURCES_PROXY_URL and pool requests, and only a Chrome TLS fingerprint
+// from a proxy exit IP (the Scrapling tier's http mode) passes; open.canada.ca rate-limits
+// per IP. Membership is opt-in; every other collection uses the direct client.
+var proxiedCollectionSlugs = map[string]struct{}{
+	"us-h1b-sponsor":   {},
+	"ca-lmia-employer": {},
+}
+
+// clientFor picks direct or proxied for a collection. A nil proxied falls back to direct.
+func clientFor(slug string, direct, proxied *http.Client) *http.Client {
+	if proxied == nil {
+		return direct
+	}
+	if _, ok := proxiedCollectionSlugs[slug]; ok {
+		return proxied
+	}
+	return direct
+}
+
+// proxiedClient builds the client for proxiedCollectionSlugs, or nil when no egress is
+// configured. The Scrapling tier (SCRAPLING_FETCH_URL) wins over SOURCES_PROXY_URL, which
+// uscis.gov no longer accepts. Both live on the crawl host, so the unit must run there. A
+// malformed value fails fast instead of falling back to the blocked direct IP, like
+// internal/ingest/sources/proxy.go's ApplyProxyEgress.
+func proxiedClient(timeout time.Duration) (*http.Client, error) {
+	if raw := strings.TrimSpace(os.Getenv("SCRAPLING_FETCH_URL")); raw != "" {
+		tr, err := scraplingfetch.New(scraplingfetch.Config{
+			URL:   raw,
+			Token: strings.TrimSpace(os.Getenv("SCRAPLING_FETCH_TOKEN")),
+		}, scraplingfetch.ModeHTTP, true, timeout)
+		if err != nil {
+			return nil, fmt.Errorf("import-collections: %w", err)
+		}
+		return &http.Client{Transport: tr, Timeout: timeout}, nil
+	}
+	raw := strings.TrimSpace(os.Getenv("SOURCES_PROXY_URL"))
+	if raw == "" {
+		return nil, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("import-collections: invalid SOURCES_PROXY_URL")
+	}
+	return safehttp.NewClientWithProxy(timeout, u), nil
+}
+
+// resolveOne resolves a single collection's members. A payload that parses to nothing is an
+// error, not an empty membership: a source that changed shape looks the same as an empty
+// register, and letting it through would reconcile the tag off every company.
+func resolveOne(ctx context.Context, client *http.Client, c collections.Collection) ([]collections.Record, error) {
+	if c.Slugs != nil {
+		return slugRecords(c.Slugs), nil
+	}
+	if c.Dataset == nil {
+		return nil, errors.New("collection has no membership source")
+	}
+	if !c.Dataset.Valid() {
+		return nil, errors.New("collection declares no single dataset source")
+	}
+
+	// Embedded dataset: parse the bundled bytes, no network fetch.
+	if len(c.Dataset.Data) > 0 {
+		return nonEmpty(c.Dataset.Parse(c.Dataset.Data))
+	}
+
+	// Self-fetching source (e.g. a paginated directory): it owns its reads, so there is no
+	// single body for the path below. The zero-record guard still applies.
+	if c.Dataset.Records != nil {
+		return nonEmpty(c.Dataset.Records(ctx, client))
+	}
+
+	url, err := datasetURL(ctx, client, c)
+	if err != nil {
+		return nil, err
+	}
+	body, err := fetchDataset(ctx, client, url)
+	if err != nil {
+		return nil, err
+	}
+	return nonEmpty(c.Dataset.Parse(body))
+}
+
+// nonEmpty turns a zero-record parse into an error. See resolveOne.
+func nonEmpty(records []collections.Record, err error) ([]collections.Record, error) {
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, errors.New("dataset parsed to no records")
+	}
+	return records, nil
+}
+
+// slugRecords lifts a hand list of canonical company slugs into the record shape a
+// dataset yields, so both membership sources reach the matcher as one type.
+func slugRecords(slugs []string) []collections.Record {
+	out := make([]collections.Record, len(slugs))
+	for i, s := range slugs {
+		out[i] = collections.Record{Name: s}
+	}
+	return out
+}
+
+// collapseRatio is the share of a tag's holders that may be lost in one run before the run
+// is treated as a broken source.
+const collapseRatio = 0.5
+
+// collapse is a managed tag about to lose most of the companies that hold it.
+type collapse struct {
+	slug       string
+	had, keeps int
+}
+
+// planResult is the computed membership change plus the per-collection match stats.
+type planResult struct {
+	writes []db.SetCompanyCollectionsParams
+	stats  map[string]collections.MatchStat
+	// collapsed lists tags losing at least collapseRatio of their holders in this run. A
+	// relabelled upstream parses fine, matches nobody, and Reconcile would strip the tag from
+	// every holder with no error.
+	collapsed []collapse
+	// withHQCountry counts companies with a known headquarters country, reported
+	// because the single-token credential rule is only as good as that column.
+	withHQCountry int
+}
+
+// plan computes the membership change for every company: it matches each collection's
+// candidates against existing companies, then reconciles each company's managed tags
+// (preserving unmanaged ones), emitting a write only where the set changes. Pure; all I/O
+// lives in run. `resolved` maps a collection slug to its candidate names/slugs.
+func plan(rows []db.ListCompanyCollectionsRow, resolved map[string][]collections.Record) planResult {
+	return planScoped(rows, resolved, collections.All)
+}
+
+// planScoped is plan over a subset of the registry: only the collections in scope are
+// matched, collapse-checked and reconciled, and every other tag a company holds is
+// left as stored.
+func planScoped(rows []db.ListCompanyCollectionsRow, resolved map[string][]collections.Record, scope []collections.Collection) planResult {
+	companies := make(map[string]collections.Company, len(rows))
+	withHQCountry := 0
+	for _, r := range rows {
+		companies[r.Slug] = collections.Company{
+			Slug:      r.Slug,
+			Countries: r.Countries,
+			HQCountry: r.HqCountry.String,
+			Website:   r.Website,
+			OpenJobs:  int(r.JobCount),
+		}
+		if r.HqCountry.String != "" {
+			withHQCountry++
+		}
+	}
+
+	want := make(map[string][]string)
+	stats := make(map[string]collections.MatchStat, len(resolved))
+	for _, c := range scope {
+		matched, s := c.Members(resolved[c.Slug], companies)
+		if c.HandList() { // ours to fix: keep the unmatched entries for diagnostics
+			s.UnmatchedNames = s.UnmatchedNames[:min(len(s.UnmatchedNames), collections.MaxLoggedUnmatched)]
+		} else {
+			s.UnmatchedNames = nil
+		}
+		stats[c.Slug] = s
+		for _, slug := range matched {
+			want[slug] = append(want[slug], c.Slug)
+		}
+	}
+
+	collapsed := detectCollapse(rows, want, scope)
+
+	// Managed = the collections in scope. A full run adds the retired slugs, so
+	// Reconcile strips a renamed/removed collection's stale tags as well; a scoped
+	// run leaves them for the next full one.
+	managed := make([]string, 0, len(scope)+len(collections.RetiredSlugs))
+	for _, c := range scope {
+		managed = append(managed, c.Slug)
+	}
+	if len(scope) == len(collections.All) {
+		managed = append(managed, collections.RetiredSlugs...)
+	}
+	var writes []db.SetCompanyCollectionsParams
+	for _, r := range rows {
+		next := collections.Reconcile(r.Collections, managed, want[r.Slug])
+		if !slices.Equal(next, normalizedCurrent(r.Collections)) {
+			writes = append(writes, db.SetCompanyCollectionsParams{Slug: r.Slug, Collections: next})
+		}
+	}
+
+	return planResult{writes: writes, stats: stats, withHQCountry: withHQCountry, collapsed: collapsed}
+}
+
+// detectCollapse finds managed tags about to lose most of their holders. A tag nobody holds
+// cannot collapse (a new collection's first run), and RetiredSlugs are skipped because
+// losing every holder is what retiring means.
+func detectCollapse(rows []db.ListCompanyCollectionsRow, want map[string][]string, scope []collections.Collection) []collapse {
+	had := map[string]int{}
+	for _, r := range rows {
+		for _, tag := range r.Collections {
+			had[tag]++
+		}
+	}
+	keeps := map[string]int{}
+	for _, tags := range want {
+		for _, tag := range tags {
+			keeps[tag]++
+		}
+	}
+
+	var out []collapse
+	for _, c := range scope {
+		before := had[c.Slug]
+		if before == 0 {
+			continue
+		}
+		if after := keeps[c.Slug]; float64(before-after) >= collapseRatio*float64(before) {
+			out = append(out, collapse{slug: c.Slug, had: before, keeps: after})
+		}
+	}
+	return out
+}
+
+// normalizedCurrent sorts a copy of the stored collections so the change check compares
+// against Reconcile's sorted output; column order must not trigger a spurious write.
+func normalizedCurrent(current []string) []string {
+	cp := slices.Clone(current)
+	slices.Sort(cp)
+	return cp
+}
+
+// datasetURL returns the address to fetch a collection's dataset from: a <SLUG>_DATASET_URL
+// override (so a run can be pinned to a snapshot), then the dataset's own resolver (the
+// GOV.UK register moves monthly), then its fixed URL.
+func datasetURL(ctx context.Context, client *http.Client, c collections.Collection) (string, error) {
+	env := strings.ToUpper(strings.ReplaceAll(c.Slug, "-", "_")) + "_DATASET_URL"
+	if u := os.Getenv(env); u != "" {
+		return u, nil
+	}
+	if c.Dataset.ResolveURL != nil {
+		return c.Dataset.ResolveURL(ctx, client)
+	}
+	return c.Dataset.URL, nil
+}
+
+// fetchDataset downloads a dataset URL. The URLs are ours or resolved from a source
+// we control, not user input, so a plain client is appropriate.
+func fetchDataset(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("dataset %s: status %d", url, resp.StatusCode)
+	}
+	// Capped on the read, not on Content-Length, which is only the server's claim.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDatasetBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxDatasetBody {
+		return nil, fmt.Errorf("dataset %s: body exceeds %d bytes", url, maxDatasetBody)
+	}
+	return body, nil
+}

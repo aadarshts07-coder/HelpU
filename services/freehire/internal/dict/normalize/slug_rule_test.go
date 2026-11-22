@@ -1,0 +1,33 @@
+package normalize
+
+import "testing"
+
+func TestSlugPredatesRule(t *testing.T) {
+	for _, tc := range []struct {
+		stored, name string
+		want         bool
+	}{
+		{"acme-pvt-ltd", "Acme Pvt Ltd", true}, // the plain slug, a form the rule now strips
+		{"acme-pvt", "Acme Pvt Ltd", true},     // a half-stripped slug from an older rule
+		{"acme", "Acme Pvt Ltd", false},        // already the current key
+		{"oldco", "NewCo", false},              // renamed: no rule made this slug of this name
+		{"acme-p", "Acme Pvt Ltd", false},      // cut inside a word
+		{"acme-holdings", "Acme Pvt Ltd", false},
+		{"ac-me", "Acme", false}, // the rule changes nothing here, so another spelling did
+		// The South Slavic forms read as written: a lone company keyed before them is planned
+		// (and aliased) by merge-companies and backfill-derive alike.
+		{"lidl-hrvatska-d-o-o-k-d", "Lidl Hrvatska d.o.o. k.d.", true},
+		{"adria-mobil-d-o-o", "Adria Mobil, d. o. o.", true},
+		{"banca-intesa-a-d", "Banca Intesa a.d.", true},
+		{"telekom-slovenije-d-d", "Telekom Slovenije, d. d.", true},
+		{"krka-d-d-novo-mesto", "KRKA, d.d., Novo mesto", false},
+		{"krka-tovarna-zdravil-d-d-novo-mesto", "Krka, tovarna zdravil, d. d., Novo mesto", true},
+		{"interaseo-s-a-s-e-s-p", "INTERASEO S.A.S E.S.P.", true},
+		{"conhydra-s-a-e-s-p", "Conhydra S.A E.S.P", true},
+		{"ragazzo-brooklin-sp", "Ragazzo Brooklin SP", false}, // a bare SP is no form
+	} {
+		if got := SlugPredatesRule(tc.stored, tc.name); got != tc.want {
+			t.Errorf("SlugPredatesRule(%q, %q) = %v, want %v", tc.stored, tc.name, got, tc.want)
+		}
+	}
+}

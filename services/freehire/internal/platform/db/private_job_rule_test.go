@@ -1,0 +1,286 @@
+package db
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// privatePredicateExemptions names every statement that reads the open catalogue and may
+// legitimately see a private posting, with the reason it may.
+//
+// "Legitimately" means one thing here: the private posting cannot reach anybody but its
+// creator, and cannot change an answer given to anybody else. Cost is a different
+// question and deliberately not this rule's — a private row that draws an LLM call is
+// wrong for another reason, and exempting it here says nothing about that.
+//
+// Three anti-tautology checks keep the list from becoming "everything that fails today":
+// a name matching no statement fails, a name outside the population fails, and a name
+// that already carries the predicate fails. An entry can only survive by describing a
+// statement that really does read open postings without the clause.
+var privatePredicateExemptions = map[string]string{
+	// --- Owner-scoped: the only reader is the posting's own creator. ---
+	"ListUserApplicationsForMatch": "the caller's own tracked applications (user_jobs.user_id = $1); a private posting here is one they created",
+
+	// --- Cannot reach a private row at all: the source or the queue never holds one.
+	// A private posting's source is 'pasted' or 'weblink' (internal/job/privatejob), and
+	// nothing crawls either. ---
+	"ListAggregatorJobsForCrosscheckBySource": "scoped to one aggregator source, which a private posting's source is never one of",
+	"ListCompanyBoardTitles":                  "scoped to the ats/company board sources, which a private posting's source is never one of",
+	"UnseenJobIDs":                            "the post-ingest close sweep, scoped to the source a crawl just ran and the company slugs it touched",
+	"UnseenJobIDsBySource":                    "the same sweep, scoped to one source; a private posting's source is never crawled",
+	"CountChronicBoardJobs":                   "the chronic-board safety net's dry-run count, scoped to one board_health-registered provider's source; a private posting's source is never crawled",
+	"CountChronicProviderJobs":                "the same safety net's boardless-provider count, scoped to one crawled source",
+	// Two independent reasons, either of which alone excludes a private posting: its source is
+	// only ever privatejob.SourcePasted or SourceWeblink, neither of which any crawl registers
+	// in board_health, so the statements' EXISTS clause finds nothing; and its external_id is a
+	// bare uuid.NewString() with no "board:" prefix, so the board-scoped LIKE cannot match it.
+	// Adding NOT is_private here anyway would be actively worse than the exemption: these two
+	// COUNT statements are the dry run for the two CLOSE statements beside them, which the rule
+	// does not check, and a count that filtered rows its close does not would report a number
+	// the --apply run then disagrees with — turning the report a human reads before arming the
+	// net into a lie about what arming it does.
+	"CountEmptyFeedBoardJobs":    "the empty-feed safety net's dry-run count, scoped the same way as its chronic twin above: one board_health-registered provider's source, which a private posting's source is never one of",
+	"CountEmptyFeedProviderJobs": "the same safety net's boardless-provider count, scoped to one crawled source",
+
+	// --- Writes back to the private row itself: the effect stays inside the row, so it
+	// reaches its creator and nobody else. ---
+	"EnqueuePendingJobs":               "queues a row for enrichment; the model's answer is written back to that same row",
+	"EnqueueEnrichmentForCompanySlugs": "the same queue, scoped to named company slugs",
+	"ClaimEnrichmentBatch":             "leases enrichment entries; the jobs join only orders them by freshness and skips closed rows",
+	"EnqueuePendingSemanticJobs":       "queues embeddings for a row; index writers exclude private jobs before publishing vectors",
+	"SelectOrphanLivenessCandidates":   "the liveness probe's candidate set; a strike or a close changes what the creator sees, not what anyone else does",
+	"SelectStaleRegisteredCandidates":  "the same probe's registered-source candidate set",
+	"MarkLivenessExpired":              "the strike write for one probed row",
+	// cmd/backfill-derive's narrowed scan. The pass re-derives a row's facets,
+	// role_fingerprint and slugs and writes them back to THAT row, so the effect stays
+	// inside it.
+	//
+	// Filtering private rows out here would be actively wrong, not merely unnecessary: a
+	// pasted JD is shown to its creator, and skipping it would leave it on whichever
+	// dictionary was current the day it was pasted, with nothing to correct it later. The
+	// unfiltered sibling this narrows (ListJobsByIDAfter) is outside the rule's shape
+	// only because it carries no closed_at predicate; adding one is what brought these two
+	// into the population, and it changed which rows are scanned, not who can see them.
+	"ListLiveJobsByIDAfter": "cmd/backfill-derive's scan narrowed to rows that can still surface; it re-derives each row's own columns and writes them back to that row",
+	"ListLiveJobIDsAfter":   "the id-only projection of the same scan, used when a corrupted TOAST value faults the wide batch",
+	"ResidualTitleGroups": "cmd/mine-titles's operator report: 2-3 word groups mined from live " +
+		"unclassified titles, read by a person and copied into the non-tech dictionary. The " +
+		"predicate is owed here and is a follow-up, not an exemption on the merits — a pasted " +
+		"JD's title fragments reaching that console is small but real. Recorded honestly rather " +
+		"than blessed: the earlier reason named the since-retired cmd/prune, which never called this.",
+
+	// --- Duplicate-marker passes: they write a pointer between two postings of one
+	// company and show nothing.
+	//
+	// A private row that lands in a cluster is already invisible, so being marked a
+	// duplicate costs it nothing. The reverse — a private row elected CANON, taking the
+	// public postings of that role out of search with it — is closed in the role pass
+	// itself: RecomputeRoleDuplicatesForCompanies carries the predicate on its canon, since a
+	// JD pasted before the employer's board entered the catalogue predates every public
+	// posting of the role. ---
+	"CompaniesWithRoleClusters":         "names the companies whose role clusters the pass recomputes",
+	"CompaniesWithAggregatorPostings":   "names the companies holding aggregator postings for the suppression pass",
+	"CompaniesWithFuzzyDedupCandidates": "names the companies the fuzzy pass considers",
+	"MarkFuzzyDuplicatesForCompany":     "writes duplicate_of_fuzzy for one company's candidates",
+	"DuplicateClosureGeoAll":            "unions a closure's geography into its owner's facets — country/region/city codes, no posting",
+	"DuplicateClosureGeoFor":            "the same union, for named owners",
+}
+
+// TestEveryOpenCatalogueReadExcludesPrivateJobs pins a rule that only a comment would
+// otherwise hold, and that four separate statements have now broken.
+//
+// A private posting is the jd-tailor-intake path: a job description ONE user pasted in,
+// visible only to them, kept out of reach by a public_slug nobody can guess rather than by
+// any authorization check (internal/job/privatejob, internal/ingest/jdresolve). Nothing
+// about the row says so — it is open, it carries derived facets and a company_slug like
+// any other posting, and jobs.is_private is the only thing that distinguishes it. So every
+// statement that reads the live catalogue has to remember one clause, and four of them did
+// not: /jobs/:slug/similar listed private postings as neighbours, ListJobsByCompany put
+// them at the top of a company's public page, and the moderator edit path both read and
+// rewrote them. Each was fixed on its own, and the next one broke anyway.
+//
+// The population is "reads jobs, restricted to open postings" — a statement asking what
+// the catalogue currently offers. Statements keyed to one job (GetJobBySlug) or to one
+// user are outside it by construction: they answer about a row somebody named, and
+// jdresolve records that ownership is the caller's to check there.
+func TestEveryOpenCatalogueReadExcludesPrivateJobs(t *testing.T) {
+	queries := openCatalogueReads(t)
+	seen := make(map[string]bool, len(queries))
+	for _, q := range queries {
+		seen[q.name] = true
+		reason, exempt := privatePredicateExemptions[q.name]
+		switch {
+		case q.hasPrivatePredicate && exempt:
+			t.Errorf("%s: %s carries NOT is_private and is also exempted (%q) — drop the exemption, "+
+				"the statement no longer needs one", q.file, q.name, reason)
+		case q.hasPrivatePredicate, exempt:
+		default:
+			t.Errorf("%s: %s reads open postings without NOT is_private. A private posting is one "+
+				"user's pasted JD (internal/job/privatejob) and must not appear in, or change, an "+
+				"answer given to anyone else. Add the clause, or name the statement in "+
+				"privatePredicateExemptions with the reason it may see one.", q.file, q.name)
+		}
+	}
+
+	// An exemption for a statement that is not in the population exempts nothing, and
+	// would go on exempting whatever statement is next given that name.
+	for name, reason := range privatePredicateExemptions {
+		if !seen[name] {
+			t.Errorf("privatePredicateExemptions[%q] (%q) matches no statement that reads open "+
+				"postings — it was renamed, deleted, or the detector no longer sees it", name, reason)
+		}
+	}
+
+	// Counting the population, not just the violations: a detector that silently stops
+	// matching looks exactly like a rule that passes. The number moves whenever a
+	// statement is added or removed, which is the point — it is read, not maintained
+	// blind.
+	if len(queries) < 35 {
+		t.Errorf("only %d statements matched as open-catalogue reads of jobs, expected at least 35 "+
+			"— scopesToOpenPostings has probably drifted from how the queries are written", len(queries))
+	}
+}
+
+// TestScopesToOpenPostings pins the detector against the four shapes that mean something
+// other than "restrict this read to open postings", each taken from a live statement.
+func TestScopesToOpenPostings(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sql  string
+		want bool
+	}{
+		{"plain where clause", "select *\nfrom jobs\nwhere closed_at is null and duplicate_of is null", true},
+		{"qualified and continued", "from jobs j\nwhere j.company_slug = $1\n  and j.closed_at is null", true},
+		{"aggregate filter", "select count(*) filter (where closed_at is null)::int\nfrom jobs", false},
+		{"order-by preference", "from jobs j\nwhere normalize_job_url(j.url) = $1\norder by (j.closed_at is null) desc", false},
+		{"join condition on a second copy", "from jobs j\nleft join jobs c on c.id = j.duplicate_of and c.closed_at is null", false},
+		{"projection of the state", "select j.id,\n       (j.closed_at is null)::bool as job_open\nfrom application_nudges n\njoin jobs j on j.id = n.job_id", false},
+		{"no mention at all", "select * from jobs where public_slug = $1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := scopesToOpenPostings(tc.sql); got != tc.want {
+				t.Errorf("scopesToOpenPostings(%q) = %v, want %v", tc.sql, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReadsJobsRecognisesTheCompleteRowView pins that a statement reading jobs_read counts as
+// reading jobs: the view carries is_private and closed_at through unchanged.
+func TestReadsJobsRecognisesTheCompleteRowView(t *testing.T) {
+	for _, tc := range []struct {
+		sql  string
+		want bool
+	}{
+		{"select * from jobs_read where id = $1", true},
+		{"select j.id from application_nudges n join jobs_read j on j.id = n.job_id", true},
+		{"select * from jobs where id = $1", true},
+		{"select * from jobs_readers where id = $1", false},
+		{"select * from job_activity where job_id = $1", false},
+	} {
+		if got := reReadsJobs.MatchString(tc.sql); got != tc.want {
+			t.Errorf("reReadsJobs.MatchString(%q) = %v, want %v", tc.sql, got, tc.want)
+		}
+	}
+}
+
+type jobsQuery struct {
+	file                string
+	name                string
+	scopedToOpen        bool
+	hasPrivatePredicate bool
+}
+
+var (
+	// jobs_effective_salary (migration 0216) and jobs_read (the complete-row view that adds
+	// job_activity's liveness stamps to jobs) are views over jobs that pass is_private and
+	// closed_at through, so reading them IS reading jobs; without them in the pattern every
+	// statement that reads a view would fall outside this rule unseen.
+	reReadsJobs   = regexp.MustCompile(`\b(from|join)\s+(jobs|jobs_effective_salary|jobs_read)\b`)
+	reOpenScope   = regexp.MustCompile(`\bclosed_at\s+is\s+null\b`)
+	rePrivatePred = regexp.MustCompile(`\bnot\s+(\w+\.)?is_private\b`)
+)
+
+// allNamedJobsQueries returns every named statement in queries/*.sql that reads the jobs
+// table, judged on the SQL and not the prose around it — a comment MENTIONING is_private
+// must not satisfy the rule, which is the same trap the folded-column walker beside this
+// one documents.
+func allNamedJobsQueries(t *testing.T) []jobsQuery {
+	t.Helper()
+	const queryDir = "queries"
+	entries, err := os.ReadDir(queryDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", queryDir, err)
+	}
+	var out []jobsQuery
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		path := filepath.Join(queryDir, entry.Name())
+		src, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, stmt := range splitNamedQueries(string(src)) {
+			body := strings.ToLower(stripSQLComments(stmt.body))
+			if !reReadsJobs.MatchString(body) {
+				continue
+			}
+			out = append(out, jobsQuery{
+				file:                path,
+				name:                stmt.name,
+				scopedToOpen:        scopesToOpenPostings(body),
+				hasPrivatePredicate: rePrivatePred.MatchString(body),
+			})
+		}
+	}
+	return out
+}
+
+// openCatalogueReads narrows that to the statements restricted to OPEN postings.
+func openCatalogueReads(t *testing.T) []jobsQuery {
+	t.Helper()
+	var out []jobsQuery
+	for _, q := range allNamedJobsQueries(t) {
+		if q.scopedToOpen {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+// reProjectedOpen is `closed_at IS NULL` parenthesised on its own — the shape of a
+// projection like `(j.closed_at IS NULL)::bool AS job_open`, which REPORTS whether a row
+// is open instead of restricting the read to open rows.
+var reProjectedOpen = regexp.MustCompile(`\(\s*(\w+\.)?closed_at\s+is\s+null\s*\)`)
+
+// scopesToOpenPostings reports whether a statement restricts what it reads to OPEN
+// postings — the question this rule is about. Judged per line, because the same three
+// words mean something else in four other places, and each of those is a live statement
+// here rather than a hypothetical:
+//
+//	count(*) FILTER (WHERE closed_at IS NULL)      an aggregate over all rows
+//	ORDER BY (j.closed_at IS NULL) DESC            a preference, not a filter
+//	LEFT JOIN jobs c ON … AND c.closed_at IS NULL  a condition on a second copy of the table
+//	(j.closed_at IS NULL)::bool AS job_open        a projection reporting the state
+//
+// The direction of a miss is deliberate: a line this fails to recognise drops a statement
+// OUT of the population, so the detector is worth exactly as much as the population count
+// the test asserts beside it, and no more.
+func scopesToOpenPostings(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if !reOpenScope.MatchString(line) || reProjectedOpen.MatchString(line) {
+			continue
+		}
+		if strings.Contains(line, "filter") || strings.Contains(line, "order by") ||
+			strings.Contains(line, "join") || strings.Contains(line, "select") {
+			continue
+		}
+		return true
+	}
+	return false
+}

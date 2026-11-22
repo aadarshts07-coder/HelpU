@@ -1,0 +1,127 @@
+package userprofile
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/strelov1/freehire/internal/platform/db"
+	"github.com/strelov1/freehire/internal/platform/pgconv"
+)
+
+// Compile-time proof that QueriesRepository satisfies Repository.
+var _ Repository = (*QueriesRepository)(nil)
+
+// QueriesRepository adapts *db.Queries to the Repository, mapping no-row on Get to
+// ErrNotFound.
+type QueriesRepository struct {
+	q *db.Queries
+}
+
+// NewQueriesRepository constructs a QueriesRepository.
+func NewQueriesRepository(q *db.Queries) *QueriesRepository {
+	return &QueriesRepository{q: q}
+}
+
+// Get returns the user's profile, mapping no row to ErrNotFound.
+func (r *QueriesRepository) Get(ctx context.Context, userID int64) (Profile, error) {
+	row, err := r.q.GetUserProfile(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Profile{}, ErrNotFound
+	}
+	if err != nil {
+		return Profile{}, err
+	}
+	return profileFromRow(row), nil
+}
+
+// Upsert creates or replaces the user's profile.
+func (r *QueriesRepository) Upsert(ctx context.Context, userID int64, specializations, skills, seniorities, excludedSkills, excludedSources, excludedCompanies, jobLanguages []string, locationPreferences json.RawMessage) (Profile, error) {
+	row, err := r.q.UpsertUserProfile(ctx, db.UpsertUserProfileParams{
+		UserID:              userID,
+		Specializations:     specializations,
+		Skills:              skills,
+		Seniorities:         seniorities,
+		ExcludedSkills:      excludedSkills,
+		ExcludedSources:     excludedSources,
+		ExcludedCompanies:   excludedCompanies,
+		JobLanguages:        jobLanguages,
+		LocationPreferences: locationPreferences,
+	})
+	if err != nil {
+		return Profile{}, err
+	}
+	return profileFromRow(row), nil
+}
+
+// CreateIfAbsent maps a concurrent profile creation to ErrConflict without replacing it.
+func (r *QueriesRepository) CreateIfAbsent(ctx context.Context, userID int64, specializations, skills, seniorities, excludedSkills, excludedSources, excludedCompanies, jobLanguages []string, locationPreferences json.RawMessage) (Profile, error) {
+	row, err := r.q.CreateUserProfileIfAbsent(ctx, db.CreateUserProfileIfAbsentParams{
+		UserID:              userID,
+		Specializations:     specializations,
+		Skills:              skills,
+		Seniorities:         seniorities,
+		ExcludedSkills:      excludedSkills,
+		ExcludedSources:     excludedSources,
+		ExcludedCompanies:   excludedCompanies,
+		JobLanguages:        jobLanguages,
+		LocationPreferences: locationPreferences,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Profile{}, ErrConflict
+	}
+	if err != nil {
+		return Profile{}, err
+	}
+	return profileFromRow(row), nil
+}
+
+// UpsertIfUnchanged behaves like Upsert but only writes when the row's updated_at still
+// matches expectedUpdatedAt, mapping no matching row to ErrConflict.
+func (r *QueriesRepository) UpsertIfUnchanged(ctx context.Context, userID int64, specializations, skills, seniorities, excludedSkills, excludedSources, excludedCompanies, jobLanguages []string, locationPreferences json.RawMessage, expectedUpdatedAt time.Time) (Profile, error) {
+	row, err := r.q.UpsertUserProfileIfUnchanged(ctx, db.UpsertUserProfileIfUnchangedParams{
+		UserID:              userID,
+		Specializations:     specializations,
+		Skills:              skills,
+		Seniorities:         seniorities,
+		ExcludedSkills:      excludedSkills,
+		ExcludedSources:     excludedSources,
+		ExcludedCompanies:   excludedCompanies,
+		JobLanguages:        jobLanguages,
+		LocationPreferences: locationPreferences,
+		UpdatedAt:           pgconv.Instant(expectedUpdatedAt),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Profile{}, ErrConflict
+	}
+	if err != nil {
+		return Profile{}, err
+	}
+	return profileFromRow(row), nil
+}
+
+// profileFromRow maps the generated db row to the domain type.
+func profileFromRow(row db.UserProfile) Profile {
+	return Profile{
+		UserID:              row.UserID,
+		Specializations:     row.Specializations,
+		Skills:              row.Skills,
+		Seniorities:         row.Seniorities,
+		ExcludedSkills:      row.ExcludedSkills,
+		ExcludedSources:     row.ExcludedSources,
+		ExcludedCompanies:   row.ExcludedCompanies,
+		JobLanguages:        row.JobLanguages,
+		LocationPreferences: row.LocationPreferences,
+		CreatedAt:           pgconv.TimePtr(row.CreatedAt),
+		UpdatedAt:           pgconv.TimePtr(row.UpdatedAt),
+	}
+}
+
+// Delete removes the user's profile; the affected-row count is ignored (idempotent).
+func (r *QueriesRepository) Delete(ctx context.Context, userID int64) error {
+	_, err := r.q.DeleteUserProfile(ctx, userID)
+	return err
+}

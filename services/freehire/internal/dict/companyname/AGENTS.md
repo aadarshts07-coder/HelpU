@@ -1,0 +1,103 @@
+# companyname
+
+Resolves a real company **display name** for boards whose ingested `jobs.company`
+is still a squished slug (e.g. `lbresearch`, `gs1ca`, `afcb`). Most ATS adapters
+set `Job.Company = e.Company` straight from the board file, so a slug in that file
+becomes the company's name — leaking into the UI label, the public
+`/companies/<slug>` URL, and breaking logo.dev's *name* endpoint (which 404s on a
+squished single token, degrading the logo to a monogram).
+
+Consumed by `cmd/backfill-company-names`, which writes each accepted name to the
+`boards` row first and to `jobs` second. The board is the half that makes it stick: the
+adapter copies `boards.company` onto every posting and the job upsert overwrites
+`jobs.company`, so until the worker wrote the board too, every rename it applied was
+undone by that board's next crawl.
+
+## Pieces
+
+- **`SlugLike(name)`** — the authoritative "is this still a slug" test (single
+  lowercase token, ≥1 letter; hyphens/digits allowed). The SQL filter is an
+  approximation; this is the gate the worker trusts.
+- **`Resolver` + `Registry`** — one resolver per source, keyed by source name. A
+  source with no resolver is left alone, never guessed. Only *title resolvers*
+  exist so far (Pinpoint, Lever, Ashby): fetch the careers page and pull the name
+  out of `<title>`, each source with its own extractor — Pinpoint's
+  `ExtractTitleName` (a `<lead-in> at {Name}` prefix or a trailing `{Name}
+  Careers`, with a stray `| …` section trimmed off), Lever's bare-name title,
+  Ashby's `{Name} Jobs`. BambooHR is deliberately absent: its careers page is a
+  client-rendered SPA whose static `<title>` is platform boilerplate, never the
+  tenant's name, so a resolver would always return `""` — `BoardFromURL` still
+  handles `bamboohr` URLs, there is just no resolver wired for it.
+- **`BoardFromURL(source, url)`** — extracts the ATS board id from a representative
+  job URL (host label for Pinpoint/BambooHR; first path segment for Lever/Ashby),
+  matching what each resolver fetches against. Sources whose job URL is a vanity
+  careers domain (e.g. Greenhouse's `a16z.com/about/jobs`) carry no board in the
+  URL, so they get no resolver — a board-from-source-file lookup is a future seam.
+- **`Accept(slug, candidate)`** — the gate applied before writing: decode HTML
+  entities, reject junk (test/recruiter titles), and require a **confidence
+  match** — the squished candidate contains the slug (or vice versa), or a
+  ≥2-letter word-initial acronym lines up. Single-letter acronyms are too weak.
+
+## Placeholder boards
+
+A second, separate case: a board whose `company` is not a slug but **the board id itself** —
+a bare host (`jobs.volvogroup.com`), a `<host>/<site>` path (`fa-etjg-saasfaprod1.fa.ocs.oraclecloud.com/Maggianos`), or a Paylocity GUID — written verbatim by
+a harvest that never resolved the tenant's name. Measured 2026-10-23: ~2,200 companies carrying
+~156k open postings under a host path, ~7,400 carrying ~44k under a GUID.
+
+- **`NewPlaceholderRegistry`** — resolvers keyed by provider that take the board id and read
+  the name the ATS states for exactly that board: Paylocity's listing title
+  (`{Name} - Job Opportunities`), UKG Ready's `format-settings` `company.name`, Oracle's site
+  `og:site_name` through `ExtractOracleSiteName` (drops a lead-in, cuts at a careers or recruiting marker, refuses a site named for
+  its purpose — "Student Casual"; a name split by "|" is read part by part), Dayforce's `candidateCorrespondenceClientName` in the
+  careers page's Next.js data (a department such as "Human Resources" is refused), UKG's
+  header-logo alt text ("Default Brand" refused, a " Brand" tail cut), Taleo's footer
+  copyright, falling back to its header-logo alt text, HiringRoom's portal title
+  (`¡Oportunidades de Empleo en {Name}!` or `{Name} | Portal externo`), Zoho Recruit's careers
+  page `og:site_name` (its `<title>` is free text). Paycor's CareerHome listing `<title>` through `ExtractPaycorTitle` (only the
+  branded template has one: a careers label beside the name is dropped, two non-label parts are
+  refused; sampled 2026-11-13, 22 of 60 hex-id boards). SuccessFactors' career-host title is parsed
+  for the observed `Jobs at {Name}` shape, and Teamtailor reads `/jobs` `og:site_name`; both are
+  grounded in the two #4033 examples only (Volvo Group and BookBeat), not a generic hostname rule.
+  SuccessFactors hub boards are excluded because their root page names the hub, not the tenants.
+  Workday was tried and is absent on purpose; ADP is not in this registry either, because it
+  states the employer nowhere but in the posting text — see below;
+  the constructor's comment says why for each.
+- **Boards still unnamed** (Paycor hex clientId): postings show the neutral label
+  `sources.PlaceholderLabel` ("Employer via Paycor", #4548) while `jobs.company_slug` stays keyed on the id
+  (`Job.CompanyKey`), so boards never merge into one company. `RenamePlaceholderBoardJobs` matches
+  the placeholder OR the label, so a later real name still renames them. Migration 0286 relabelled the
+  rows already stored.
+- **`AcceptPlaceholder`** — no confidence match: the lookup is by the exact board id, so there
+  is no slug to compare against and nothing an unrelated page could slip through (join's
+  argument in `Accept`). It refuses only what is no improvement — empty, junk, the placeholder.
+
+- **`GroundedName`** — the guard for the one resolver that uses a model. ADP's career center
+  names the client nowhere (checked 2026-10-25 in a headless browser, all six configuration
+  requests included), so `cmd/backfill-company-names` wires a resolver that has the model read
+  a board's postings (`postingTextResolver`, LLM_* configured, `COMPANY_NAMES_LLM_MAX` boards a
+  run). The model only READS: its answer is admitted when it appears verbatim, as whole words,
+  in the postings it was given, and the postings' own spelling is what gets written. A generic
+  phrase that really is in the text ("Our client", "The Company") is refused. Measured on 50
+  boards: 38 named, every one the employer the postings state; ~$0.0013 a board at Z.ai's
+  public price.
+
+`cmd/backfill-company-names` runs this as its second pass, driven by the BOARD
+(`ListPlaceholderCompanyBoards`), and renames the board and its stored jobs in one transaction:
+the pass finds its work by the board, so a board renamed without its jobs is never listed again.
+The same transaction records the retired slug in `company_slug_aliases` under reason
+`board_name` (migration 0195), so the old `/companies/<slug>` page 301s to the new one.
+
+## Design stance
+
+Conservative on purpose: a wrong-but-plausible name reads worse than the monogram
+fallback, so a candidate is applied only when it demonstrably shares text with the
+slug. That means genuine **rebrands** whose new name shares nothing with the slug
+(e.g. `lbresearch` → "Centellic") are deliberately *not* auto-resolved — they need
+a human or a different signal (the domain). Resolvers return `""` (not an error)
+when a source yields no usable name; errors are reserved for transport failures so
+one dead board never aborts a run.
+
+The confidence rules and the accept/reject corpus are the same ones validated by
+the manual Pinpoint pass (PR #825): 104 accepted, 10 correctly rejected across 241
+slug boards.

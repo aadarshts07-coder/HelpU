@@ -1,0 +1,148 @@
+package main
+
+import (
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/strelov1/freehire/internal/platform/db"
+)
+
+// full builds what save holds after the full upsert ran. Built through fullWrite rather than
+// by hand, so the mapping from the generated row is covered here too.
+func full(inserted, changed bool) written {
+	return fullWrite(db.UpsertJobRow{
+		Inserted: pgtype.Bool{Bool: inserted, Valid: true},
+		Changed:  changed,
+	})
+}
+
+// cheap builds what save holds after the liveness refresh ran — the branch that reports
+// neither inserted nor changed because the row was neither created nor edited.
+func cheap() written {
+	return cheapWrite(db.RefreshUnchangedJobRow{})
+}
+
+func TestExpiredPostingDoesNotReachSearchOrRecentFeed(t *testing.T) {
+	w := fullWrite(db.UpsertJobRow{
+		ClosedAt: pgtype.Timestamptz{Valid: true},
+		Inserted: pgtype.Bool{Bool: true, Valid: true},
+		Changed:  true,
+	})
+	if needsIndex(w) || needsRecentFeed(w, false, pgtype.Bool{Bool: true, Valid: true}) {
+		t.Fatal("expired posting queued for search or the recently added feed")
+	}
+}
+
+// closed gates enrichment and the apply-form capture as well as the index: a write that left
+// the row closed (a deadline already past) must not pay for an LLM call or a form request.
+func TestClosedReportsOnlyARowTheWriteLeftClosed(t *testing.T) {
+	expired := fullWrite(db.UpsertJobRow{ClosedAt: pgtype.Timestamptz{Valid: true}})
+	if !expired.closed() {
+		t.Error("closed() = false for a row the write left closed")
+	}
+	if full(true, true).closed() {
+		t.Error("closed() = true for an open row")
+	}
+	if cheap().closed() {
+		t.Error("closed() = true for the cheap write, which carries no row")
+	}
+}
+
+func TestNeedsIndex(t *testing.T) {
+	cases := []struct {
+		name string
+		w    written
+		want bool
+	}{
+		{"new posting", full(true, true), true},
+		{"edited posting", full(false, true), true},
+		{"liveness-only refresh", cheap(), false},
+		// A cities-only drift misses the cheap write without changing indexed content.
+		{"full write that changed nothing", full(false, false), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := needsIndex(c.w); got != c.want {
+				t.Errorf("needsIndex(%+v) = %v, want %v", c.w, got, c.want)
+			}
+		})
+	}
+}
+
+// The cheap branch reports itself exactly: tookCheapWrite is how save tells the two writes
+// apart, and the cheap one never reports a close because it never changes closed_at.
+func TestCheapWriteIsReportedAsCheapAndNeedsNoIndex(t *testing.T) {
+	w := cheap()
+	if !w.tookCheapWrite() {
+		t.Error("tookCheapWrite() = false for the cheap write")
+	}
+	if full(true, true).tookCheapWrite() {
+		t.Error("tookCheapWrite() = true for the full write")
+	}
+	if needsIndex(w) {
+		t.Error("needsIndex(cheap) = true; a liveness-only refresh must not reach search")
+	}
+}
+
+func TestNeedsRecentFeed(t *testing.T) {
+	tech := pgtype.Bool{Bool: true, Valid: true}
+	notTech := pgtype.Bool{Bool: false, Valid: true}
+	unresolved := pgtype.Bool{}
+
+	marked := func(w written) written {
+		w.duplicateOf = pgtype.Int8{Int64: 42, Valid: true}
+		return w
+	}
+
+	cases := []struct {
+		name    string
+		w       written
+		deduped bool
+		isTech  pgtype.Bool
+		want    bool
+	}{
+		{"new IT posting", full(true, true), false, tech, true},
+		{"edited IT posting", full(false, true), false, tech, true},
+		{"new non-IT posting", full(true, true), false, notTech, false},
+		{"new posting with unresolved tech evidence", full(true, true), false, unresolved, false},
+		{"deduped role repost", full(true, true), true, tech, false},
+		{"already marked duplicate", marked(full(true, true)), false, tech, false},
+		{"liveness-only refresh", cheap(), false, tech, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := needsRecentFeed(c.w, c.deduped, c.isTech); got != c.want {
+				t.Errorf("needsRecentFeed(%+v, %v, %+v) = %v, want %v", c.w, c.deduped, c.isTech, got, c.want)
+			}
+		})
+	}
+}
+
+func TestClustersByRole(t *testing.T) {
+	marked := func(w written) written {
+		w.duplicateOf = pgtype.Int8{Int64: 42, Valid: true}
+		return w
+	}
+	cases := []struct {
+		name string
+		w    written
+		want bool
+	}{
+		// A per-city fan-out arrives as inserts, which is the whole point of the gate.
+		{"new posting", full(true, true), true},
+		// Re-crawls are the bulk of a pass; the batch recompute owns them, not the hot path.
+		{"edited posting", full(false, true), false},
+		{"liveness-only refresh", cheap(), false},
+		{"full write that changed nothing", full(false, false), false},
+		// A row that already knows it is a repost has nothing to ask.
+		{"already marked", marked(full(true, true)), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := clustersByRole(c.w); got != c.want {
+				t.Errorf("clustersByRole(%+v) = %v, want %v", c.w, got, c.want)
+			}
+		})
+	}
+}

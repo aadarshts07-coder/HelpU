@@ -1,0 +1,166 @@
+<script lang="ts">
+  import { locale } from '#lib/i18n/currentLocale.svelte.js';
+  import { format, t } from '#lib/i18n/t.js';
+  import { messages } from './SearchSelect.messages';
+  import type { Snippet } from 'svelte';
+  import { type FacetOption } from '#lib/facets.js';
+  import { optionMatches, uniqueByValue } from '#lib/facetOptions.js';
+  import { CountryFlag, EntityLogo, Input } from '#lib/ui/index.js';
+  import SkillIcon from '../SkillIcon.svelte';
+  import { pillClass, pillPressed, pillTitle } from './pill';
+  import PillMeta from './PillMeta.svelte';
+  import { must } from '#lib/utils.js';
+
+  // A searchable multi-select: a filter field over the options rendered as a
+  // scrollable list of three-state pills (off / include / exclude). Selected options
+  // sort to the front. Used for the larger enum facets (specialization, industry,
+  // skills) and, in plain mode (excludable=false), the profile's specialization
+  // picker. Clicking calls `onToggle`, which the parent wires to cycle or to a plain
+  // include toggle.
+  let {
+    options,
+    include,
+    exclude = [],
+    excludable = false,
+    placeholder,
+    onToggle,
+    clearOnSelect = false,
+    expand = false,
+    cap,
+    searchAliases,
+    techIcons = false,
+    entityLogos = false,
+    filter = $bindable(''),
+    empty,
+    label,
+  }: {
+    options: FacetOption[];
+    include: string[];
+    exclude?: string[];
+    excludable?: boolean;
+    placeholder?: string;
+    onToggle: (value: string) => void;
+    // When set, the filter field is cleared after each toggle — suited to a
+    // build-a-set form (search → pick → search the next), not the filter panel
+    // where you toggle several visible pills after one search.
+    clearOnSelect?: boolean;
+    // Drop the scroll cap on the pill list — used in the roomy modal pane where the
+    // full list should show, unlike the compact sidebar (which caps + scrolls).
+    expand?: boolean;
+    // Show at most `cap` options while the search field is empty, so a huge
+    // distribution (role: hundreds of values) stays readable — the rest surface
+    // as you type. Selected options always show. Unset = no cap.
+    cap?: number;
+    // Curated slug → shorthand-aliases map. When set, the search matches an option
+    // by its aliases too, so "swe" or "data engineer" surface the right
+    // specialization, not just a label substring.
+    searchAliases?: Record<string, readonly string[]>;
+    // Show a brand logo beside a pill's label, where SkillIcon has one for the
+    // option's value — set only by the skills facet (see FacetDef.techIcons).
+    techIcons?: boolean;
+    // Show the option's brand mark via EntityLogo (opt.icon, resolved through the
+    // logo proxy) — set only by the source facet (see FacetDef.entityLogos).
+    entityLogos?: boolean;
+    // The search field's text, bindable so a page can seed it (e.g. from its URL).
+    filter?: string;
+    // Rendered instead of "Nothing found" when the search matches no option, given
+    // the trimmed search text — e.g. /dictionary's "add this term" action.
+    empty?: Snippet<[string]>;
+    // The search field's accessible name. A placeholder is not one, so it is only
+    // the fallback (facet placeholders read "Search skills", which names it well).
+    label?: string;
+  } = $props();
+
+  const s = $derived(t(messages, locale()));
+
+  function toggle(value: string) {
+    onToggle(value);
+    if (clearOnSelect) filter = '';
+  }
+
+  const isSelected = (v: string) => include.includes(v) || exclude.includes(v);
+
+  // Typo-tolerant filter (fuzzyMatch falls back to substring, so it only ever
+  // adds matches — no exact hit is lost) over the label and any shorthand aliases.
+  // Keeps the busiest-first order (selected pinned first); the parent already
+  // sorted options by count.
+  const matched = $derived(
+    uniqueByValue(options)
+      .filter((o) => optionMatches(o, filter, searchAliases))
+      .sort((a, b) => Number(isSelected(b.value)) - Number(isSelected(a.value))),
+  );
+
+  // While unfiltered, cap the list to the top `cap` (already busiest-first) plus
+  // any selected options, so nothing selected is hidden. Typing lifts the cap.
+  const capped = $derived(cap && !filter.trim() && matched.length > cap);
+  const shown = $derived(capped ? matched.filter((o, i) => i < must(cap) || isSelected(o.value)) : matched);
+  const hiddenCount = $derived(capped ? matched.length - shown.length : 0);
+</script>
+
+<div class="flex flex-col gap-2">
+  <Input
+    bind:value={filter}
+    placeholder={placeholder ?? s.search}
+    aria-label={label ?? placeholder ?? s.search}
+    class="w-full"
+  />
+  <div class={expand ? 'flex flex-wrap gap-1.5' : 'flex max-h-44 flex-wrap gap-1.5 overflow-y-auto'}>
+    {#each shown as opt (opt.value)}
+      {@const excluded = exclude.includes(opt.value)}
+      {@const included = include.includes(opt.value)}
+      <button
+        type="button"
+        onclick={() => toggle(opt.value)}
+        aria-pressed={pillPressed(included, excluded)}
+        title={pillTitle(included, excluded, excludable)}
+        class={pillClass(
+          included || excluded,
+          excluded,
+          'inline-flex max-w-full items-center gap-1.5 px-2.5 py-1 text-sm',
+        )}
+      >
+        <!-- The leading mark is hidden from assistive tech: a flag's label, a brand mark's
+             title and a logo's initials fallback each name the same thing the visible
+             label beside them does, so it would be announced twice. `contents` keeps the
+             wrapper out of the pill's flex layout. -->
+        <span aria-hidden="true" class="contents"
+          >{#if opt.flag}<CountryFlag
+              code={opt.flag}
+              label={opt.label}
+              class="text-base"
+            />{:else if techIcons}<SkillIcon
+              slug={opt.value}
+              class="size-3.5 shrink-0"
+            />{:else if entityLogos}<EntityLogo
+              name={opt.label}
+              src={opt.icon}
+              shape="square"
+              size="xs"
+              class="shrink-0"
+            />{/if}</span
+        >
+        <!-- A very long value (roles like "Senior Business Development Representative")
+             truncates to one line with an ellipsis instead of wrapping the pill onto
+             two rows; the full label surfaces on hover via title. -->
+        <span class="min-w-0 truncate" title={opt.label}>{opt.label}</span><PillMeta
+          {included}
+          {excluded}
+          count={opt.count?.toLocaleString()}
+          class="shrink-0"
+        />
+      </button>
+    {/each}
+    {#if shown.length === 0}
+      {#if empty && filter.trim()}
+        {@render empty(filter.trim())}
+      {:else}
+        <span class="px-1 py-1 text-xs text-muted-foreground">{s.empty}</span>
+      {/if}
+    {/if}
+  </div>
+  {#if hiddenCount > 0}
+    <span class="px-1 text-xs text-muted-foreground"
+      >{format(s.more, { count: hiddenCount.toLocaleString(locale()) })}</span
+    >
+  {/if}
+</div>

@@ -1,0 +1,58 @@
+[
+ {
+  "id": 687964,
+  "title": "Développeur Data Stage / Python-Java",
+  "slug": "developpeur-data-stage-python-java",
+  "remoteMode": "partial",
+  "location": {
+   "countryCode": "FR",
+   "label": "Île-de-France, France"
+  },
+  "company": {
+   "name": "R&S TELECOM"
+  },
+  "publishedAt": "2026-10-28T13:08:12+01:00"
+ },
+ {
+  "id": 663470,
+  "title": "Développeur fullstack/ DevOps",
+  "slug": "developpeur-fullstack-devops-7",
+  "remoteMode": "partial",
+  "location": {
+   "countryCode": "FR",
+   "label": "Ramonville-Saint-Agne, Occitanie"
+  },
+  "company": {
+   "name": "ODHCOM - FREELANCEREPUBLIK"
+  },
+  "publishedAt": "2026-10-28T13:06:16+01:00"
+ },
+ {
+  "id": 683664,
+  "title": "Architecte des SIC, architecture solutions métiers (Cloud)",
+  "slug": "architecte-de-solutions-metiers",
+  "remoteMode": null,
+  "location": {
+   "countryCode": "CH",
+   "label": "Genève, Suisse"
+  },
+  "company": {
+   "name": "Avanda"
+  },
+  "publishedAt": "2026-10-28T13:03:33+01:00"
+ },
+ {
+  "id": 683665,
+  "title": "Responsable Qualité Logiciel",
+  "slug": "responsable-qualite-logiciel-1",
+  "remoteMode": null,
+  "location": {
+   "countryCode": "CH",
+   "label": "Genève, Suisse"
+  },
+  "company": {
+   "name": "Avanda"
+  },
+  "publishedAt": "2026-10-28T13:03:33+01:00"
+ }
+]

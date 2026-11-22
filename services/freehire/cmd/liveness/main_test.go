@@ -1,0 +1,259 @@
+package main
+
+import (
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/strelov1/freehire/internal/ingest/sources"
+	"github.com/strelov1/freehire/internal/platform/db"
+)
+
+// probedButWithheld names the probed sources search still withholds after two weeks unseen,
+// each with the reason the livenessProbed marker would be wrong for it.
+var probedButWithheld = map[string]string{
+	// The sitemap is the live catalogue, so a posting it stopped naming two weeks ago is gone;
+	// the probe only closes the last postings of companies the company-scoped sweep lost.
+	"torre": "the crawl re-lists every live posting",
+	// The feed lists the whole catalogue (275 pages, 27.5k postings, 2026-10-30), so a posting
+	// it stopped naming is gone. The third of its unseen rows that still answered 200 were not
+	// left out of the feed: they were listed, but under an employer the coverage gate keeps out
+	// of the write path, which until then refreshed nothing (see pipeline.CoveredRefresher).
+	"4dayweek": "the crawl re-lists every live posting",
+	// The API names only the last week, so most of what it stopped listing is still up — but
+	// 64 of 100 such rows sampled when the probe landed were dead (~7k of ~11k), and the probe
+	// reads ~5k a day, so the marker would put them back in search for days. Grant it once the
+	// backlog is worked off and only the live tail is left unseen.
+	"arbeitnow":      "the probe's backlog is days deep",
+	"instaffo":       "the probe's backlog is days deep",
+	"remotedotcom":   "the probe's backlog is days deep",
+	"thehub":         "the probe's backlog is days deep",
+	"reed":           "the probe's backlog is days deep",
+	"arbeitsagentur": "the probe's backlog is days deep",
+	"xing":           "the probe's backlog is days deep",
+	"gradcracker":    "the probe's backlog is days deep",
+	"engage":         "the probe's backlog is days deep",
+	"betterteam":     "the probe's backlog is days deep",
+}
+
+// A source this worker probes is usually one whose crawl cannot re-list every live posting, so
+// search must not withhold its postings for going unseen — the probe is what closes the dead
+// ones. The adapter's livenessProbed marker is what tells search that; a member added here
+// without it would have its live postings hidden after two weeks, unless probedButWithheld
+// says why that is right for it.
+func TestProbedSourcesAreSparedSearchUnseenRule(t *testing.T) {
+	windows := sources.UnseenWindows(sources.Taxonomy(), time.Hour)
+	for _, p := range probeDespiteRegistered {
+		_, withheld := windows[p]
+		_, meant := probedButWithheld[p]
+		switch {
+		case withheld && !meant:
+			t.Errorf("%q is probed here but search withholds its postings after going unseen — add the livenessProbed marker to its adapter, or say why not in probedButWithheld", p)
+		case !withheld && meant:
+			t.Errorf("%q is in probedButWithheld but search no longer withholds it — drop the entry", p)
+		}
+	}
+	for p := range probedButWithheld {
+		if !slices.Contains(probeDespiteRegistered, p) {
+			t.Errorf("%q is in probedButWithheld but is not probed here — drop the entry", p)
+		}
+	}
+}
+
+func TestMatchingProvidersMatchesBareAndDashedMembers(t *testing.T) {
+	providers := []string{"whatjobs", "whatjobs-de", "whatjobs-uk", "himalayas", "whatjobsomething"}
+	got := matchingProviders(providers, []string{"whatjobs"})
+	want := []string{"whatjobs", "whatjobs-de", "whatjobs-uk"}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("matchingProviders() = %v, want %v", got, want)
+	}
+}
+
+// The two candidate queries return row types that differ by one field, and ExternalID is
+// that field: it is what echojobs' evidence path is keyed on, since this source's stored
+// jobs.url is the employer's own ATS link rather than a page echojobs.io serves. A
+// conversion that dropped it would probe echojobs.io/job/ for every candidate and read a
+// 404 — "this posting is gone" — for a catalogue that is entirely still live.
+func TestStaleCandidateCarriesEveryFieldAnEvidencePathReads(t *testing.T) {
+	got := staleCandidate(db.SelectStaleRegisteredCandidatesRow{
+		ID: 42, PublicSlug: "acme-go-dev-42", Source: "echojobs",
+		URL: "https://boards.greenhouse.io/acme/jobs/1", ExternalID: ":acme-go-dev",
+		LivenessStrikes: 1,
+	})
+	want := candidate{
+		id: 42, publicSlug: "acme-go-dev-42", source: "echojobs",
+		url: "https://boards.greenhouse.io/acme/jobs/1", externalID: ":acme-go-dev", strikes: 1,
+	}
+	if got != want {
+		t.Errorf("staleCandidate() = %+v, want %+v", got, want)
+	}
+}
+
+// An orphan row has no external id to carry — its evidence is its own URL — but everything
+// the verdict is written against (the id it updates, the slug it logs, the strike count that
+// decides whether a reset is even issued) must survive the conversion.
+func TestOrphanCandidatesCarryEveryFieldAVerdictIsWrittenAgainst(t *testing.T) {
+	got := orphanCandidates([]db.SelectOrphanLivenessCandidatesRow{
+		{ID: 7, PublicSlug: "one-7", Source: "telegram", URL: "https://t.me/jobs/7", LivenessStrikes: 0},
+		{ID: 8, PublicSlug: "two-8", Source: "manual", URL: "https://acme.test/jobs/8", LivenessStrikes: 1},
+	})
+	want := []candidate{
+		{id: 7, publicSlug: "one-7", source: "telegram", url: "https://t.me/jobs/7"},
+		{id: 8, publicSlug: "two-8", source: "manual", url: "https://acme.test/jobs/8", strikes: 1},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("orphanCandidates() = %+v, want %+v", got, want)
+	}
+}
+
+// The age rule may only close a posting the crawl has ALSO stopped listing, and how long
+// "stopped listing" takes is the provider's own sweep window — not a number restated here.
+// whatjobs declares 14 days because a posting that drifts past its crawl budget reads as
+// unseen for days at a time; on the 48-hour default the age rule would close postings the
+// next crawl immediately reopens, which is the flap it was closing them into.
+func TestUnseenWindowTakesTheProvidersOwnSweepWindow(t *testing.T) {
+	declared := map[string]time.Duration{
+		"whatjobs":    14 * 24 * time.Hour,
+		"whatjobs-de": 14 * 24 * time.Hour,
+		"gem":         24 * time.Hour, // narrower than the default, and not in this list
+	}
+	got := unseenWindow([]string{"whatjobs", "whatjobs-de"}, declared)
+	if want := 14 * 24 * time.Hour; got != want {
+		t.Errorf("unseenWindow() = %v, want %v — the default would close postings the crawl still lists", got, want)
+	}
+}
+
+// A provider that declares nothing is swept on the default, and a provider that declares
+// something NARROWER than the default does not drag the guess below it: this close has no
+// evidence to appeal to, so it takes the most patient window in play.
+func TestUnseenWindowNeverNarrowsBelowTheDefault(t *testing.T) {
+	declared := map[string]time.Duration{"impatient": 24 * time.Hour}
+	for _, srcs := range [][]string{{"undeclared"}, {"impatient"}, {"impatient", "undeclared"}} {
+		if got := unseenWindow(srcs, declared); got != sources.DefaultSweepGrace {
+			t.Errorf("unseenWindow(%v) = %v, want the %v default", srcs, got, sources.DefaultSweepGrace)
+		}
+	}
+}
+
+// adzuna is a single provider, not a family, so it exercises the bare-name arm of the match
+// while whatjobs exercises the dashed one. The negative half matters as much: "adzuna" must
+// not sweep up an unrelated provider that merely starts with those letters, since every
+// member it matches is closed by a guess rather than by evidence.
+func TestMatchingProvidersResolvesAdzunaWithoutOverreaching(t *testing.T) {
+	providers := []string{"adzuna", "adzunajobs", "greenhouse", "whatjobs-de"}
+	got := matchingProviders(providers, []string{"adzuna"})
+	want := []string{"adzuna"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("matchingProviders() = %v, want %v", got, want)
+	}
+}
+
+// Both members declare a 14-day sweep grace today, so adding adzuna must not move the second
+// clock the age rule takes. If either ever widens its own window, this asserts the rule
+// follows the more patient of them rather than silently keeping the old number.
+func TestUnseenWindowUnchangedByAddingAdzuna(t *testing.T) {
+	declared := sources.SweepGraceWindows(sources.All(nil))
+	whatjobsOnly := unseenWindow([]string{"whatjobs"}, declared)
+	withAdzuna := unseenWindow([]string{"whatjobs", "adzuna"}, declared)
+	if withAdzuna < whatjobsOnly {
+		t.Fatalf("adding adzuna narrowed the unseen window: %v -> %v", whatjobsOnly, withAdzuna)
+	}
+}
+
+// Every expireDespiteRegistered member is credential-gated — adzuna registers only when
+// ADZUNA_APP_ID/ADZUNA_APP_KEY are set, each whatjobs market only when its publisher id is —
+// and this worker builds the registry from the same credential-gated constructor the crawler
+// uses. On a host missing the credential the source silently leaves the age rule AND enters
+// the URL probe, so which lifecycle mechanism owns a source would turn on an environment
+// variable that describes crawling. Naming the unmatched prefix is what turns that into a
+// refusal instead.
+func TestUnmatchedPrefixesNamesAPrefixNoProviderMatches(t *testing.T) {
+	providers := []string{"whatjobs", "whatjobs-de", "greenhouse"}
+	got := unmatchedPrefixes(providers, []string{"whatjobs", "adzuna"})
+	want := []string{"adzuna"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("unmatchedPrefixes() = %v, want %v", got, want)
+	}
+}
+
+func TestUnmatchedPrefixesEmptyWhenEveryPrefixMatches(t *testing.T) {
+	providers := []string{"whatjobs", "whatjobs-de", "adzuna", "greenhouse"}
+	if got := unmatchedPrefixes(providers, []string{"whatjobs", "adzuna"}); len(got) != 0 {
+		t.Fatalf("unmatchedPrefixes() = %v, want empty", got)
+	}
+}
+
+// The bare-name match must count: adzuna is one provider, not a family, so a check that only
+// recognised "<prefix>-" members would refuse to run on a perfectly healthy host.
+func TestUnmatchedPrefixesAcceptsABareNameMatch(t *testing.T) {
+	if got := unmatchedPrefixes([]string{"adzuna"}, []string{"adzuna"}); len(got) != 0 {
+		t.Fatalf("unmatchedPrefixes() = %v, want empty", got)
+	}
+}
+
+func TestMatchingProvidersEmptyOnNoMatch(t *testing.T) {
+	got := matchingProviders([]string{"himalayas", "jobicy"}, []string{"whatjobs"})
+	if len(got) != 0 {
+		t.Fatalf("matchingProviders() = %v, want empty", got)
+	}
+}
+
+func TestProviderClassificationDoesNotRequireReedCredential(t *testing.T) {
+	t.Setenv("REED_API_KEY", "")
+	// Keep the independent age-expiration startup guards satisfied.
+	t.Setenv("WHATJOBS_PUBLISHER_IDS", "us:test-publisher")
+	t.Setenv("ADZUNA_APP_ID", "test-app")
+	t.Setenv("ADZUNA_APP_KEY", "test-key")
+	live := providerKeys(sources.All(sources.NewClient()))
+	if slices.Contains(live, "reed") {
+		t.Fatal("test setup unexpectedly registers Reed for crawling")
+	}
+	if missing := unmatchedPrefixes(live, expireDespiteRegisteredPrefixes); len(missing) > 0 {
+		t.Fatalf("independent age guard fails: %v", missing)
+	}
+	classified := classifiedProviderKeys()
+	for _, source := range unsignalledSources {
+		if slices.Contains(classified, source) {
+			t.Fatalf("unsignalled age source %s is registered", source)
+		}
+	}
+	for _, source := range probeDespiteRegistered {
+		if !slices.Contains(classified, source) {
+			t.Errorf("startup probe guard rejects %s without a crawl credential", source)
+		}
+	}
+	if !slices.Equal(filterSources(probeDespiteRegistered, "instaffo"), []string{"instaffo"}) {
+		t.Fatal("unrelated source filter was lost")
+	}
+}
+
+func TestUnconfiguredWhatJobsMarketRetainsAgeFallback(t *testing.T) {
+	t.Setenv("WHATJOBS_PUBLISHER_IDS", "us:test-publisher")
+	t.Setenv("ADZUNA_APP_ID", "test-app")
+	t.Setenv("ADZUNA_APP_KEY", "test-key")
+	crawlProviders := providerKeys(sources.All(sources.NewClient()))
+	if slices.Contains(crawlProviders, "whatjobs-uk") {
+		t.Fatal("test setup unexpectedly configures UK crawl")
+	}
+	if missing := unmatchedPrefixes(crawlProviders, expireDespiteRegisteredPrefixes); len(missing) > 0 {
+		t.Fatalf("live-prefix guard fails: %v", missing)
+	}
+	if !slices.Contains(classifiedProviderKeys(), "whatjobs-uk") {
+		t.Fatal("UK must remain excluded from orphan URL probes")
+	}
+	fallback, grace := registeredAgeFallback()
+	selected := filterSources(fallback, "whatjobs-uk")
+	if !slices.Equal(selected, []string{"whatjobs-uk"}) {
+		t.Fatalf("UK has no age fallback: %v", selected)
+	}
+	if got := unseenWindow(selected, grace); got != 14*24*time.Hour {
+		t.Fatalf("UK unseen grace=%v, want 14 days", got)
+	}
+	t.Setenv("WHATJOBS_PUBLISHER_IDS", "")
+	noMarkets := providerKeys(sources.All(sources.NewClient()))
+	if missing := unmatchedPrefixes(noMarkets, expireDespiteRegisteredPrefixes); !slices.Contains(missing, "whatjobs") {
+		t.Fatal("live-prefix guard no longer detects missing publisher configuration")
+	}
+}

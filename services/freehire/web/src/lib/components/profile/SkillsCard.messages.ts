@@ -1,0 +1,19 @@
+import { defineMessages } from '#lib/i18n/t.js';
+
+export const messages = defineMessages(
+  {
+    // `{skill}` is substituted via `#lib/i18n/t`'s `format()` — see its doc comment
+    // for why a template beats splitting this into a prefix/suffix pair.
+    saveFailed: "Couldn't save {skill}.",
+    // Spoken only: the chip changing state, and "Saved", are the visible confirmation.
+    added: '{skill} added',
+    removed: '{skill} removed',
+  },
+  {
+    ru: {
+      saveFailed: 'Не удалось сохранить {skill}.',
+      added: '{skill} добавлен',
+      removed: '{skill} удалён',
+    },
+  },
+);

@@ -1,0 +1,339 @@
+<script lang="ts">
+  import { page } from '$app/state';
+  import { resolve } from '$app/paths';
+  import { siClaude, siCursor } from 'simple-icons';
+  import { CHATGPT_APP_URL, MCP_PATH, OPENAI_MARK } from '#lib/appLinks.js';
+  import { sourceLogoUrl } from '#lib/logo.js';
+  import { announce } from '#lib/announce.svelte.js';
+  import { glyphColorFor } from '#lib/markColor.js';
+  import { EntityLogo } from '#lib/ui/index.js';
+
+  // One hosted connection, signed in with OAuth when it is added.
+  let { compact = false, iconsOnly = false }: { compact?: boolean; iconsOnly?: boolean } = $props();
+  const url = $derived(`${page.url.origin}${MCP_PATH}`);
+
+  // One tile per host. `domain` is what the logo proxy resolves the mark from — by
+  // name alone "Cursor" or "Grok" is ambiguous. `directory` is a one-click install from the host's own directory, drawn in that
+  // host's brand colour and mark (from simple-icons, like every other brand mark on the
+  // site) so the button reads as the host's install, not ours. The label's ink is picked
+  // per fill: white on Claude's terracotta measured 3.1:1, the near-black it gets instead 5.7:1.
+  type Host = {
+    id: string;
+    label: string;
+    domain: string;
+    // Our own copy of the mark, where the logo proxy resolves the wrong one: for Grok it
+    // returns xAI's wordmark rather than Grok Bot's round mark.
+    logo?: string;
+    // A black-on-transparent mark, inverted on the dark theme where it would vanish.
+    mono?: boolean;
+    // `viewBox` only for a mark not drawn in simple-icons' 24-unit box.
+    directory?: { url: string; brand: { hex: string; path: string; viewBox?: string }; note: string };
+    steps: string[];
+    file?: string;
+    snippet?: (url: string) => string;
+  };
+  const hosts: Host[] = [
+    {
+      id: 'claude',
+      label: 'Claude',
+      domain: 'claude.ai',
+      // Keep the original directory listing when connecting an account.
+      directory: {
+        url: 'https://claude.ai/directory/freehire',
+        brand: siClaude,
+        note: 'Open the freehire listing',
+      },
+      steps: [
+        'Open Settings, then Connectors.',
+        'Choose Add custom connector.',
+        'Name it freehire, paste the address, and choose Add, then sign in to freehire when asked.',
+        'Start a new chat, turn the freehire connector on, and ask a job question.',
+      ],
+    },
+    {
+      id: 'chatgpt',
+      label: 'ChatGPT',
+      domain: 'chatgpt.com',
+      mono: true,
+      // Search and personal access use the same original app.
+      directory: {
+        url: CHATGPT_APP_URL,
+        brand: OPENAI_MARK,
+        note: 'One click, then sign in to freehire',
+      },
+      steps: [
+        'The directory listing above and a custom connection are separate install options. Custom connections require your ChatGPT workspace to allow adding MCP servers and using the tools you need.',
+        'Open Plugins and choose Add, then Add custom MCP server.',
+        'Name it freehire and paste the address.',
+        'Choose OAuth, then sign in to freehire and approve the connection.',
+        'In a new chat, pick freehire from the + menu and ask a job question.',
+      ],
+    },
+    {
+      id: 'grok',
+      label: 'Grok Bot',
+      domain: 'grok.com',
+      logo: '/brands/grok.png',
+      mono: true,
+      steps: [
+        'Open Connect apps in the sidebar.',
+        'Add a custom app, name it freehire, and paste the address.',
+        'Grok Bot asks you to sign in to freehire; finish it in your browser.',
+        'In a chat, type @ and pick freehire, then ask a job question.',
+      ],
+    },
+    {
+      id: 'claude-code',
+      label: 'Claude Code',
+      domain: 'claude.ai',
+      logo: '/brands/claude-code.svg',
+      steps: ['Run this once in your terminal, then ask Claude Code a job question.'],
+      snippet: (u) => `claude mcp add --transport http freehire ${u}`,
+    },
+    {
+      id: 'codex',
+      label: 'Codex',
+      domain: 'openai.com',
+      logo: '/brands/codex.svg',
+      mono: true,
+      steps: [
+        'Run the command below in your terminal to add freehire to Codex.',
+        'Run codex mcp list to verify the server is configured, then start a new Codex session and ask a job question.',
+      ],
+      snippet: (u) => `codex mcp add freehire --url ${u}`,
+    },
+    {
+      // Gemini's own web app has no way to add an MCP server; its CLI does.
+      id: 'gemini-cli',
+      label: 'Gemini CLI',
+      domain: 'gemini.google.com',
+      steps: ['Run this once in your terminal, then ask Gemini CLI a job question.'],
+      snippet: (u) => `gemini mcp add --transport http freehire ${u}`,
+    },
+    {
+      id: 'cursor',
+      label: 'Cursor',
+      domain: 'cursor.com',
+      directory: {
+        url: 'https://cursor.directory/plugins/freehire-mcp',
+        brand: siCursor,
+        note: 'Listed on cursor.directory',
+      },
+      steps: ['Add this to your MCP config, then ask the agent a job question.'],
+      file: '~/.cursor/mcp.json',
+      snippet: (u) => `{
+  "mcpServers": {
+    "freehire": { "url": "${u}" }
+  }
+}`,
+    },
+  ];
+  // A link from elsewhere (the homepage icons) names the host to open on; anything unknown falls back to Claude.
+  const requestedHost = page.url.searchParams.get('host');
+  let host = $state(hosts.find((h) => h.id === requestedHost)?.id ?? 'claude');
+  const selected = $derived(hosts.find((h) => h.id === host));
+
+  // One copy confirmation at a time, keyed by the text that was copied.
+  let copied = $state<string | null>(null);
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  async function copy(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = text;
+      announce('Copied to the clipboard');
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => (copied = null), 1600);
+    } catch {
+      // Clipboard can be blocked (no permission / insecure context) — the text is
+      // plainly visible to select by hand, so a failed copy needs no fallback.
+    }
+  }
+</script>
+
+{#snippet copyButton(text: string, label: string)}
+  <button
+    type="button"
+    onclick={() => copy(text)}
+    aria-label={copied === text ? `Copied ${label}` : `Copy ${label}`}
+    class="shrink-0 rounded-md border border-border px-2 py-0.5 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+  >
+    {copied === text ? 'copied ✓' : 'copy'}
+  </button>
+{/snippet}
+
+{#if iconsOnly}
+  <!-- Just the marks, each a way into the full setup on /mcp. They wrap rather than scroll:
+       a hidden-scrollbar row cut its last mark mid-word at the card edge ("Cc…"). -->
+  <nav class="flex flex-wrap gap-x-5 gap-y-2" aria-label="Assistants">
+    {#each hosts as h (h.id)}
+      <!-- eslint-disable svelte/no-navigation-without-resolve -- resolve() path plus the host query -->
+      <a
+        href={`${resolve('/mcp')}?host=${h.id}`}
+        class="flex shrink-0 items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <EntityLogo
+          name={h.label}
+          src={h.logo ?? sourceLogoUrl(h.label, h.domain) ?? undefined}
+          size="xs"
+          shape="square"
+          class={h.mono ? 'dark:invert' : undefined}
+        />
+        {h.label}
+      </a>
+      <!-- eslint-enable svelte/no-navigation-without-resolve -->
+    {/each}
+  </nav>
+{:else}
+  <!-- Setup: one address, with instructions for each assistant. Every host's panel stays in the
+     HTML, `hidden` when unselected, so crawlers and agents read all of them. -->
+  <section class={compact ? '' : 'rounded-2xl border border-border bg-secondary/20 p-5 sm:p-8'}>
+    <div class={['flex flex-wrap items-end justify-between gap-3', compact && 'min-h-14']}>
+      <h2 class="text-sm text-muted-foreground">Pick your assistant</h2>
+      {#if compact && selected?.directory}
+        <!-- The selected host's one-click install, lifted above the picker: it needs no
+           address or steps at all, so it leads whenever the host has one. -->
+        {@const d = selected.directory}
+        <div class="flex flex-col items-end gap-1.5">
+          <!-- eslint-disable svelte/no-navigation-without-resolve -- external directory URL, not a SvelteKit route -->
+          <a
+            href={d.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-opacity hover:opacity-90"
+            style:background-color="#{d.brand.hex}"
+            style:color={glyphColorFor(`#${d.brand.hex}`)}
+          >
+            <svg viewBox={d.brand.viewBox ?? '0 0 24 24'} class="size-4 fill-current" aria-hidden="true"
+              ><path d={d.brand.path} /></svg
+            >
+            Add to {selected?.label} ↗
+          </a>
+          <!-- eslint-enable svelte/no-navigation-without-resolve -->
+          <span class="text-xs text-muted-foreground">{d.note}</span>
+        </div>
+      {/if}
+    </div>
+    <div
+      class="mt-4 flex gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      role="group"
+      aria-label="Assistant"
+    >
+      {#each hosts as h (h.id)}
+        <button
+          type="button"
+          aria-pressed={host === h.id}
+          onclick={() => (host = h.id)}
+          class={[
+            'flex shrink-0 items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors',
+            host === h.id
+              ? 'border-border bg-background text-foreground shadow-sm'
+              : 'border-transparent text-muted-foreground hover:text-foreground',
+          ]}
+        >
+          <EntityLogo
+            name={h.label}
+            src={h.logo ?? sourceLogoUrl(h.label, h.domain) ?? undefined}
+            size="xs"
+            shape="square"
+            class={h.mono ? 'dark:invert' : undefined}
+          />
+          {h.label}
+        </button>
+      {/each}
+    </div>
+
+    {#each hosts as h (h.id)}
+      <div hidden={h.id !== host} class={compact ? 'mt-6' : 'mt-8'}>
+        <div class="flex flex-wrap items-start justify-between gap-4">
+          <h3 class={['font-semibold tracking-tight', compact ? 'text-base' : 'text-xl']}>Add it to {h.label}</h3>
+          {#if h.directory && !compact}
+            <div class="flex flex-col items-end gap-1.5">
+              <!-- eslint-disable svelte/no-navigation-without-resolve -- external directory URL, not a SvelteKit route -->
+              <a
+                href={h.directory.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-opacity hover:opacity-90"
+                style:background-color="#{h.directory.brand.hex}"
+                style:color={glyphColorFor(`#${h.directory.brand.hex}`)}
+              >
+                <svg viewBox={h.directory.brand.viewBox ?? '0 0 24 24'} class="size-4 fill-current" aria-hidden="true"
+                  ><path d={h.directory.brand.path} /></svg
+                >
+                Add to {h.label} ↗
+              </a>
+              <!-- eslint-enable svelte/no-navigation-without-resolve -->
+              <span class="text-xs text-muted-foreground">{h.directory.note}</span>
+            </div>
+          {/if}
+        </div>
+
+        <div class="max-w-2xl">
+          <p class="mt-4 text-sm leading-relaxed text-muted-foreground">
+            One connection for search and your account: jobs, employers and market data, plus your profile, saved jobs,
+            tracking and alerts. Your assistant asks you to sign in to freehire when you add it.
+          </p>
+
+          <div class="mt-4 flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2">
+            <code class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-sm">{url}</code>
+            {@render copyButton(url, 'connector address')}
+          </div>
+          <p class="mt-2 text-xs text-muted-foreground">
+            No API key needed. Approve account access in your browser and revoke it from Connected devices at any time.
+          </p>
+
+          <div class="mt-5">
+            <ol class="space-y-3">
+              {#each h.steps as step, i (i)}
+                <li class="flex gap-4">
+                  <span
+                    class="flex size-6 shrink-0 items-center justify-center rounded-full bg-foreground text-xs font-semibold text-background"
+                    >{i + 1}</span
+                  >
+                  <span class={['leading-relaxed text-muted-foreground', compact && 'text-sm']}>{step}</span>
+                </li>
+              {/each}
+            </ol>
+            {#if h.snippet}
+              {@const text = h.snippet(url)}
+              <figure class="mt-5 overflow-hidden rounded-xl border border-border bg-secondary/60 shadow-sm">
+                <figcaption
+                  class="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs text-muted-foreground"
+                >
+                  <span class="font-mono">{h.file ?? 'terminal'}</span>
+                  <span class="ml-auto">{@render copyButton(text, `${h.label} setup`)}</span>
+                </figcaption>
+                <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed">{text}</pre>
+              </figure>
+            {/if}
+            <p class="mt-5 text-sm leading-relaxed text-muted-foreground">
+              {#if h.id === 'codex'}
+                Then run <code>codex mcp login freehire</code> and approve the connection in your browser.
+              {:else if h.id === 'claude-code'}
+                Then use <code>/mcp</code> inside Claude Code and choose Authenticate for freehire, and approve the connection
+                in your browser.
+              {:else}
+                If your assistant does not open sign-in on its own, use its sign-in or authentication control and
+                approve the freehire connection in your browser.
+              {/if}
+            </p>
+          </div>
+        </div>
+      </div>
+    {/each}
+
+    {#if !compact}
+      {@const agentPrompt = `Add the freehire MCP server to ${selected?.label ?? 'this assistant'}. Its address is ${url} (streamable HTTP transport) and it requires OAuth sign-in: start it and let me approve access in my browser. When it is connected, run one job search to confirm it works, then tell me it is ready.`}
+      <div class="mt-8 max-w-2xl">
+        <h3 class="text-sm font-medium">Or copy this and send it to your agent</h3>
+        <figure class="mt-3 overflow-hidden rounded-xl border border-border bg-secondary/60 shadow-sm">
+          <figcaption class="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs text-muted-foreground">
+            <span>prompt</span>
+            <span class="ml-auto">{@render copyButton(agentPrompt, 'agent prompt')}</span>
+          </figcaption>
+          <p class="p-4 text-sm leading-relaxed">{agentPrompt}</p>
+        </figure>
+      </div>
+    {/if}
+  </section>
+{/if}

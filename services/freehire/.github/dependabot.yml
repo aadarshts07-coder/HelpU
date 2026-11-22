@@ -1,0 +1,75 @@
+# Every ecosystem waits a week before proposing a release (`cooldown`). A compromised
+# package is usually caught and yanked within days of being published, and a version
+# bump that arrives on its first day is exactly the window such a release relies on.
+# Security updates ignore the cooldown, so a fix for a known advisory is not delayed.
+#
+# The github-actions entry also maintains the commit-SHA pins in .github/workflows: it
+# moves the SHA and the `# vX.Y.Z` comment beside it together.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    open-pull-requests-limit: 5
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    open-pull-requests-limit: 5
+    groups:
+      # @scalar/server-side-rendering renders /docs/api on the server with its OWN
+      # pinned @scalar/api-reference, and the browser hydrates it with ours. Bumped
+      # apart, the two disagree on Vue's scoped-style hashes and the page renders
+      # unstyled until the client remounts — it shipped that way from 14 to 30 Oct
+      # 2026. One PR for all of them, or none.
+      scalar:
+        patterns:
+          - "@scalar/*"
+
+  - package-ecosystem: npm
+    directory: /extension
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /design-system
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"

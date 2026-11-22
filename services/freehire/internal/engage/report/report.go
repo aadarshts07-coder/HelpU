@@ -1,0 +1,276 @@
+// Package report is the job-report moderation queue: any authenticated user can flag a
+// live vacancy with a reason and details, and a moderator resolves the report (optionally
+// soft-closing the job) or dismisses it. It owns reason validation and the review state
+// machine; the Repository owns persistence. A report never creates a job; resolving
+// may close it through the JobCloser seam.
+package report
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+)
+
+// Sentinel errors mapped to HTTP statuses by the handler.
+var (
+	// ErrReportNotFound is the missing review target (mapped to 404).
+	ErrReportNotFound = errors.New("report: not found")
+	// ErrDuplicateOpen is a second open report of the same job by the same user (the
+	// partial unique index; mapped to 409).
+	ErrDuplicateOpen = errors.New("report: an open report for this job already exists")
+	// ErrAlreadyDecided is a resolve/dismiss of a report that is no longer pending
+	// (mapped to 409).
+	ErrAlreadyDecided = errors.New("report: already decided")
+	// ErrInvalid is a content-validation failure (mapped to 400); its message is
+	// user-facing.
+	ErrInvalid = errors.New("report: invalid")
+)
+
+// maxDetailsLen bounds the free-text explanation.
+const maxDetailsLen = 5000
+
+// validReasons is the closed reason vocabulary, mirrored by the migration's CHECK and the
+// SPA. The service re-validates so an unknown value is a clean 400, not a raw constraint error.
+var validReasons = map[string]bool{
+	"no_response":  true,
+	"not_relevant": true,
+	"spam":         true,
+	"fraud":        true,
+	"other":        true,
+}
+
+// FileInput is the user-supplied content of a report; the job is identified separately.
+type FileInput struct {
+	Reason          string
+	Details         string
+	ContactTelegram string
+}
+
+// validate normalizes and checks the input, returning a trimmed copy ready to persist. A
+// reason outside the vocabulary or over-long details is ErrInvalid.
+//
+// Details are OPTIONAL; blank is stored as absent. A mandatory field collects filler
+// that reaches a moderator looking like evidence.
+func (in FileInput) validate() (FileInput, error) {
+	if !validReasons[in.Reason] {
+		return FileInput{}, fmt.Errorf("%w: unknown reason %q", ErrInvalid, in.Reason)
+	}
+	details := strings.TrimSpace(in.Details)
+	if len(details) > maxDetailsLen {
+		return FileInput{}, fmt.Errorf("%w: details too long", ErrInvalid)
+	}
+	return FileInput{
+		Reason:          in.Reason,
+		Details:         details,
+		ContactTelegram: strings.TrimSpace(in.ContactTelegram),
+	}, nil
+}
+
+// Report is a stored moderation-queue report, decoupled from the generated db row.
+// The ownership columns (reported_by, reviewed_by) are never on the wire and are dropped.
+type Report struct {
+	ID              int64
+	JobID           int64
+	Reason          string
+	Details         string
+	ContactTelegram string
+	Status          string
+	ReviewReason    string
+	ReviewedAt      *time.Time
+	CreatedAt       *time.Time
+}
+
+// ReportDetail is a Report plus the reporter's email and the reported job's slug and
+// title, for the moderator queue and the decision mail.
+type ReportDetail struct {
+	Report
+	// ReporterID is the account that filed it, kept off Report (which the handler
+	// serializes). The decision path signs the reporter's unsubscribe link with it.
+	ReporterID    int64
+	ReporterEmail string
+	JobSlug       string
+	JobTitle      string
+}
+
+// Repository is the persistence contract for the report queue. Implementations map the
+// generated db rows to Report/ReportDetail, so the use case never sees db.*.
+type Repository interface {
+	Create(ctx context.Context, reportedBy, jobID int64, reason, details, contactTelegram string) (Report, error)
+	Get(ctx context.Context, id int64) (ReportDetail, error)
+	ListPending(ctx context.Context) ([]ReportDetail, error)
+	MarkResolved(ctx context.Context, id, reviewedBy int64, note string) (Report, error)
+	MarkDismissed(ctx context.Context, id, reviewedBy int64, reviewReason string) (Report, error)
+}
+
+// JobCloser soft-closes one job. QueriesRepository satisfies it; the seam keeps
+// Resolve testable without a database.
+type JobCloser interface {
+	Close(ctx context.Context, jobID int64) error
+}
+
+// The outcomes a decision notice describes.
+const (
+	OutcomeResolved  = "resolved"
+	OutcomeDismissed = "dismissed"
+)
+
+// Decision is what the reporter is told: who to reach, what they reported, and what the
+// moderator did. Note is the resolve note or dismissal reason and may be empty.
+type Decision struct {
+	// UserID is the reporter's account, used to sign their unsubscribe link. It is
+	// never null, so this is activity mail the user may decline, not transactional.
+	UserID    int64
+	Email     string
+	JobTitle  string
+	JobSlug   string
+	Details   string
+	Note      string
+	Outcome   string
+	JobClosed bool
+}
+
+// ReporterNotifier tells the person who filed a report what a moderator decided.
+// MailNotifier is the production implementation.
+type ReporterNotifier interface {
+	NotifyDecision(ctx context.Context, d Decision) error
+}
+
+// Service implements the report use cases.
+type Service struct {
+	repo     Repository
+	closer   JobCloser
+	notifier ReporterNotifier
+}
+
+// New creates a Service backed by the given Repository and JobCloser. It notifies no one
+// until WithNotifier is called.
+func New(repo Repository, closer JobCloser) *Service {
+	return &Service{repo: repo, closer: closer}
+}
+
+// WithNotifier attaches the channel a decision is announced over and returns the
+// Service. Without one, reports are still decided but no one is told.
+func (s *Service) WithNotifier(n ReporterNotifier) *Service {
+	s.notifier = n
+	return s
+}
+
+// File validates the content and stores a pending report owned by reportedBy against
+// jobID. A second open report of the same job by the same user surfaces ErrDuplicateOpen
+// (the repository maps the unique violation).
+func (s *Service) File(ctx context.Context, reportedBy, jobID int64, in FileInput) (Report, error) {
+	v, err := in.validate()
+	if err != nil {
+		return Report{}, err
+	}
+	return s.repo.Create(ctx, reportedBy, jobID, v.Reason, v.Details, v.ContactTelegram)
+}
+
+// ListPending returns the moderator review queue, newest first.
+func (s *Service) ListPending(ctx context.Context) ([]ReportDetail, error) {
+	return s.repo.ListPending(ctx)
+}
+
+// ResolveInput is a moderator's resolve decision: whether to soft-close the reported job,
+// the note explaining what was done, and whether to tell the reporter. The note is
+// stored as the review reason and quoted in the notice, so write it for the reporter.
+type ResolveInput struct {
+	CloseJob       bool
+	NotifyReporter bool
+	Note           string
+}
+
+// DismissInput is a moderator's dismissal: the reason the report changed nothing, and
+// whether to tell the reporter. Like ResolveInput.Note, the reason reaches the reporter.
+type DismissInput struct {
+	NotifyReporter bool
+	Reason         string
+}
+
+// Review is the outcome of a moderator decision. Notified is false when the moderator
+// did not ask, no notifier is configured, or delivery failed; the decision stands either way.
+type Review struct {
+	Report   Report
+	Notified bool
+}
+
+// Resolve marks a pending report resolved, recording the reviewing moderator and their note.
+// When in.CloseJob is set, the reported job is soft-closed first; a close failure aborts
+// before the mark, so the report stays pending and the action is safe to retry. A missing
+// report is ErrReportNotFound; one no longer pending is ErrAlreadyDecided.
+func (s *Service) Resolve(ctx context.Context, reviewerID, id int64, in ResolveInput) (Review, error) {
+	rep, err := s.pending(ctx, id)
+	if err != nil {
+		return Review{}, err
+	}
+	if in.CloseJob {
+		if err := s.closer.Close(ctx, rep.JobID); err != nil {
+			return Review{}, err
+		}
+	}
+	decided, err := s.repo.MarkResolved(ctx, id, reviewerID, in.Note)
+	if err != nil {
+		return Review{}, err
+	}
+	notified := s.notify(ctx, in.NotifyReporter, rep, Decision{
+		Note:      in.Note,
+		Outcome:   OutcomeResolved,
+		JobClosed: in.CloseJob,
+	})
+	return Review{Report: decided, Notified: notified}, nil
+}
+
+// Dismiss marks a pending report dismissed with an optional reason, recording the reviewing
+// moderator. The reported job is not touched. A missing report is ErrReportNotFound; one no
+// longer pending is ErrAlreadyDecided.
+func (s *Service) Dismiss(ctx context.Context, reviewerID, id int64, in DismissInput) (Review, error) {
+	rep, err := s.pending(ctx, id)
+	if err != nil {
+		return Review{}, err
+	}
+	decided, err := s.repo.MarkDismissed(ctx, id, reviewerID, in.Reason)
+	if err != nil {
+		return Review{}, err
+	}
+	notified := s.notify(ctx, in.NotifyReporter, rep, Decision{
+		Note:    in.Reason,
+		Outcome: OutcomeDismissed,
+	})
+	return Review{Report: decided, Notified: notified}, nil
+}
+
+// pending loads the report a decision targets, rejecting one that is no longer awaiting
+// review. Both decisions start here, so neither can forget the guard.
+func (s *Service) pending(ctx context.Context, id int64) (ReportDetail, error) {
+	rep, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return ReportDetail{}, err
+	}
+	if rep.Status != statusPending {
+		return ReportDetail{}, ErrAlreadyDecided
+	}
+	return rep, nil
+}
+
+// notify announces a recorded decision, reporting whether the reporter was reached.
+// It never errors: not asked, no notifier, or a failed transport all mean "not
+// notified", because a written decision must not be undone by its announcement.
+// A failure is logged.
+func (s *Service) notify(ctx context.Context, asked bool, rep ReportDetail, d Decision) bool {
+	if !asked || s.notifier == nil {
+		return false
+	}
+	d.UserID, d.Email = rep.ReporterID, rep.ReporterEmail
+	d.JobTitle, d.JobSlug, d.Details = rep.JobTitle, rep.JobSlug, rep.Details
+	if err := s.notifier.NotifyDecision(ctx, d); err != nil {
+		log.Printf("report: notifying the reporter of report %d failed: %v", rep.ID, err)
+		return false
+	}
+	return true
+}
+
+// statusPending is the only status that can be resolved or dismissed.
+const statusPending = "pending"

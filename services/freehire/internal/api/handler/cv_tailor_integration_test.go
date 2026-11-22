@@ -1,0 +1,489 @@
+//go:build integration
+
+// Integration tests for the CV-tailoring HTTP surface (add-cv-tailoring): the tailoring
+// bootstrap's one remaining precondition (a résumé to seed a base CV from) and success,
+// field-level PATCH via a minted API key (apply / 422 bad addressing / 404 owner isolation), and
+// the tailoring-context requirement split. Run with: go test -tags=integration ./internal/api/handler/
+package handler
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/strelov1/freehire/internal/ai/assistant"
+	"github.com/strelov1/freehire/internal/ai/plan"
+	"github.com/strelov1/freehire/internal/application/jobtracking"
+	"github.com/strelov1/freehire/internal/candidate/cv"
+	"github.com/strelov1/freehire/internal/candidate/cvedit"
+	"github.com/strelov1/freehire/internal/candidate/experience"
+	"github.com/strelov1/freehire/internal/candidate/fitanalysis"
+	"github.com/strelov1/freehire/internal/candidate/matchanalysis"
+	"github.com/strelov1/freehire/internal/candidate/resume"
+	"github.com/strelov1/freehire/internal/candidate/resumeextract"
+	"github.com/strelov1/freehire/internal/identity/auth"
+	"github.com/strelov1/freehire/internal/platform/db"
+)
+
+// testTailorProDaily is the real daily tailoring ceiling every fixture in this file pins on
+// the PRO plan via plan.Config.WithProCeiling — free gets no tailoring at all, and pro's
+// shipped allowance is unlimited behind a fair-use guard, so neither can tell "spent" from
+// "never had any". One is enough: no
+// test here bootstraps more than one vacancy in a run (a reload of the SAME vacancy is
+// idempotent and charges once).
+const testTailorProDaily = 1
+
+// newTailorAPI builds a handler wired for the tailoring endpoints and truncates the tables.
+func newTailorAPI(t *testing.T) (*cvHandlers, *auth.Issuer, *pgxpool.Pool) {
+	t.Helper()
+	pool := startPostgres(t)
+	queries := db.New(pool)
+	if _, err := pool.Exec(context.Background(),
+		"TRUNCATE cvs, users, jobs, user_jobs, applications, user_job_analysis, api_keys, assistant_sessions, experience_employments, experience_atoms RESTART IDENTITY CASCADE"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	iss := auth.NewIssuer("test-secret", time.Hour)
+	plans := plan.NewStore(queries, pool, plan.DefaultConfig().Enforcing().WithProCeiling(plan.FeatureTailor, testTailorProDaily))
+	bank := experience.NewStore(experience.NewQueriesRepository(queries))
+	resumeStore := resume.New(nil, resume.NewQueriesRepository(queries))
+	h := &cvHandlers{queries: queries, jobReader: queries,
+		cvStore: cv.NewStore(cv.NewQueriesRepository(queries)),
+		// The REAL gate, built exactly as Register builds it. A nil gate here would be a
+		// configuration production does not have: newCVHandlers always receives
+		// bankGate{bank}, so an API-key PATCH edits as the agent and an uncited claim is
+		// refused. A fixture asserting otherwise tests nothing that ships.
+		editor: cvedit.NewEditor(cvedit.NewRepository(pool, queries),
+			bankGate{bank: bank}),
+		resume: resumeStore,
+		seeder: bankedSeeder{resume: resumeStore, bank: bank},
+		fit:    fitanalysis.New(queries, nil, matchanalysis.NewAnalyzer(nil)),
+		plans:  plans,
+		match:  &matchHandlers{fit: fitanalysis.New(queries, plans, matchanalysis.NewAnalyzer(nil))},
+		// Same adapter Register wires: bootstrap must place the vacancy on the board.
+		jobs: trackingBoarder{repo: jobtracking.NewQueriesRepository(queries, pool)},
+		// The tailoring bootstrap mints its conversation through the assistant's store,
+		// exactly as Register wires it.
+		assistantSessions: assistant.NewStore(queries),
+	}
+	return h, iss, pool
+}
+
+// buildTailorApp wires the CV + tailoring routes. They are open to every signed-in user (the
+// beta gate was lifted when CV tailoring went public); credits meter the LLM spend instead.
+func buildTailorApp(h *cvHandlers, iss *auth.Issuer) *fiber.App {
+	app := fiber.New(fiber.Config{ErrorHandler: RenderError})
+	saved := auth.RequireAuth(iss, testVersions)
+	// The CV surface mounts the SCOPED middleware in production, because the key the
+	// tailoring bootstrap mints is narrow (auth.ScopeCV). Mirroring that here is the
+	// point of the test: a harness on the full-scope-only middleware would reject the
+	// very credential the flow issues.
+	keyAuth := auth.RequireAuthOrScopedKey(iss, testVersions, apiKeys{h.queries}, auth.ScopeCV)
+	app.Get("/api/v1/me/cvs/:id", keyAuth, cvContract(h))
+	app.Post("/api/v1/me/cvs/tailor", saved, markPaidAI(plan.FeatureTailor), cvContract(h))
+	app.Patch("/api/v1/me/cvs/:id", keyAuth, cvContract(h))
+	app.Get("/api/v1/me/cvs/:id/tailor-context", keyAuth, cvContract(h))
+	return app
+}
+
+// doBearer issues a request authenticated by an API key (Authorization: Bearer).
+func doBearer(t *testing.T, app *fiber.App, method, path, token string, body any) *http.Response {
+	t.Helper()
+	var b []byte
+	if body != nil {
+		b, _ = json.Marshal(body)
+	}
+	req := httptest.NewRequest(method, path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	return resp
+}
+
+func seedJobSlug(t *testing.T, pool *pgxpool.Pool, slug string) int64 {
+	t.Helper()
+	return seedJobSlugDesc(t, pool, slug, "")
+}
+
+func seedJobSlugDesc(t *testing.T, pool *pgxpool.Pool, slug, description string) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO jobs (source, external_id, url, title, public_slug, description)
+		 VALUES ('test', $1, 'https://e.test/'||$1, 'Backend Engineer', $1, $2) RETURNING id`,
+		slug, description).Scan(&id); err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+	return id
+}
+
+func seedAnalysis(t *testing.T, h *cvHandlers, userID, jobID int64) {
+	t.Helper()
+	blob, _ := json.Marshal(&matchanalysis.Analysis{
+		Verdict: "Good Fit", OverallScore: 72, Recommendation: "Lead with Go depth.",
+		Dimensions: []matchanalysis.Dimension{{Key: "skills", Label: "Skills", Score: 70, Comment: "solid"}},
+		RequirementMatch: []matchanalysis.Requirement{
+			{Text: "Kubernetes", Priority: "required", Status: matchanalysis.StatusMissingGap, Evidence: "absent"},
+			{Text: "Go", Priority: "required", Status: matchanalysis.StatusMissingHave, Evidence: "in profile"},
+			{Text: "REST", Priority: "preferred", Status: "covered", Evidence: "bullet 1"},
+		},
+		Strengths: []string{"Go depth"}, Gaps: []string{"K8s"},
+	})
+	if err := h.queries.UpsertUserJobAnalysis(context.Background(), db.UpsertUserJobAnalysisParams{
+		UserID: userID, JobID: jobID, Analysis: blob, Model: "test-model",
+	}); err != nil {
+		t.Fatalf("seed analysis: %v", err)
+	}
+}
+
+// seedFreshResume writes a structured résumé whose stamp matches the résumé upload time, so
+// resume.Structured serves it (ok=true) and the base CV can be seeded from it.
+func seedFreshResume(t *testing.T, pool *pgxpool.Pool, userID int64) {
+	t.Helper()
+	seedFreshResumeSkills(t, pool, userID, []string{"Go"})
+}
+
+func seedFreshResumeSkills(t *testing.T, pool *pgxpool.Pool, userID int64, skills []string) {
+	t.Helper()
+	st, _ := json.Marshal(resumeextract.Structured{FullName: "Ada Lovelace", Summary: "Engineer", Skills: skills})
+	at := time.Now().Truncate(time.Microsecond)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE users SET resume_object_key = 'k', resume_uploaded_at = $2,
+		 resume_structured = $3, resume_structured_uploaded_at = $2, resume_structured_model = 'test-model'
+		 WHERE id = $1`, userID, at, st); err != nil {
+		t.Fatalf("seed résumé: %v", err)
+	}
+}
+
+func TestTailorCVBootstrap(t *testing.T) {
+	h, iss, pool := newTailorAPI(t)
+	app := buildTailorApp(h, iss)
+
+	user := seedSubscriber(t, pool, "tailor@example.test", true)
+	tok, _ := iss.Issue(user, testTokenVersion)
+	jobID := seedJobSlug(t, pool, "backend-eng")
+
+	// No résumé to seed a base → 409. No cached analysis exists either, and that no longer
+	// gates the bootstrap — the résumé gate is the only precondition left.
+	if resp := doCV(t, app, fiber.MethodPost, "/api/v1/me/cvs/tailor", tok, tailorCVRequest{JobSlug: "backend-eng"}); resp.StatusCode != fiber.StatusConflict {
+		t.Fatalf("no-résumé = %d, want 409", resp.StatusCode)
+	}
+
+	seedFreshResume(t, pool, user)
+
+	// Bootstrap succeeds with no cached analysis: the tailored CV is created, and the
+	// response's analysis is nil since none has been computed yet.
+	resp := doCV(t, app, fiber.MethodPost, "/api/v1/me/cvs/tailor", tok, tailorCVRequest{JobSlug: "backend-eng"})
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("bootstrap = %d, want 201", resp.StatusCode)
+	}
+	var got struct {
+		Data tailorCVResponse `json:"data"`
+	}
+	json.NewDecoder(resp.Body).Decode(&got)
+	resp.Body.Close()
+	if got.Data.TailorCVID == "" || got.Data.BaseCVID == "" || got.Data.TailorCVID == got.Data.BaseCVID {
+		t.Errorf("ids = %+v, want two distinct ids", got.Data)
+	}
+	// The bootstrap mints the tailoring conversation itself: a tailor-preset session
+	// bound to this CV and vacancy, already stored on the CV so reopening the
+	// workspace resumes it instead of starting over.
+	if got.Data.SessionID == "" {
+		t.Fatalf("bootstrap returned no session id")
+	}
+	var boundPreset, boundSession, boundCV string
+	var boundJob int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT s.preset, s.cv_id, s.job_id, c.agent_session_id
+		   FROM assistant_sessions s JOIN cvs c ON c.id = s.cv_id
+		  WHERE s.id = $1`, got.Data.SessionID).Scan(&boundPreset, &boundCV, &boundJob, &boundSession); err != nil {
+		t.Fatalf("read the minted session: %v", err)
+	}
+	if boundPreset != assistant.PresetTailor || boundCV != got.Data.TailorCVID || boundJob != jobID {
+		t.Errorf("session = preset %q cv %s job %d, want a tailor session bound to cv %s / job %d",
+			boundPreset, boundCV, boundJob, got.Data.TailorCVID, jobID)
+	}
+	if boundSession != got.Data.SessionID {
+		t.Errorf("cv.agent_session_id = %q, want the minted session %q", boundSession, got.Data.SessionID)
+	}
+	if got.Data.Analysis != nil {
+		t.Errorf("analysis = %+v, want nil (none cached yet)", got.Data.Analysis)
+	}
+	if !got.Data.ColdStartRunning {
+		t.Errorf("cold_start_running = false, want true on a bootstrap that just created the CV")
+	}
+	// Creating the tailored CV consumed one of the day's tailoring sessions.
+	var used int
+	_ = pool.QueryRow(context.Background(),
+		`SELECT used FROM usage_daily WHERE user_id=$1 AND feature='tailor' AND day=(now() AT TIME ZONE 'utc')::date`, user).Scan(&used)
+	if used != 1 {
+		t.Errorf("tailoring sessions used = %d, want 1", used)
+	}
+	var charges int
+	_ = pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM usage_ledger WHERE user_id=$1 AND kind='consume' AND feature='tailor'`, user).Scan(&charges)
+	if charges != 1 {
+		t.Errorf("tailoring charges = %d, want 1", charges)
+	}
+	assertVacancyOnKanban(t, pool, user, jobID)
+}
+
+// assertVacancyOnKanban checks the tailor bootstrap's tracking side-effect: the vacancy
+// is bookmarked AND staged as preparing (so it lands in the Preparing Kanban column),
+// without applied_at (preparing a CV is not submitting an application), and the ledger
+// event that set the stage is attributed to the platform, not the candidate.
+func assertVacancyOnKanban(t *testing.T, pool *pgxpool.Pool, userID, jobID int64) {
+	t.Helper()
+	var saved bool
+	var appliedAt pgtype.Timestamptz
+	var stage pgtype.Text
+	err := pool.QueryRow(context.Background(),
+		`SELECT uj.saved_at IS NOT NULL, a.applied_at, a.stage
+		   FROM user_jobs uj
+		   LEFT JOIN applications a ON a.user_id = uj.user_id AND a.job_id = uj.job_id
+		  WHERE uj.user_id = $1 AND uj.job_id = $2`, userID, jobID).
+		Scan(&saved, &appliedAt, &stage)
+	if err != nil {
+		t.Fatalf("read tracking row: %v", err)
+	}
+	if !saved {
+		t.Errorf("saved_at unset — tailored vacancy should stay bookmarked")
+	}
+	if !stage.Valid || stage.String != "preparing" {
+		t.Errorf("stage = %q, want preparing — the Kanban's own column, not applied", stage.String)
+	}
+	if appliedAt.Valid {
+		t.Errorf("applied_at = %v, want null — tailor is not an application submit", appliedAt.Time)
+	}
+	rows, err := db.New(pool).ListUserJobs(context.Background(), db.ListUserJobsParams{
+		UserID: userID, Limit: 50, Offset: 0, Filter: "board",
+	})
+	if err != nil {
+		t.Fatalf("ListUserJobs board: %v", err)
+	}
+	found := false
+	for _, r := range rows {
+		if r.ID == jobID {
+			found = true
+			if !r.Stage.Valid || r.Stage.String != "preparing" {
+				t.Errorf("board row stage = %q, want preparing", r.Stage.String)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("job %d missing from filter=board listing after tailor", jobID)
+	}
+
+	var source string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT source FROM application_events
+		  WHERE user_id = $1 AND job_id = $2 AND kind = 'stage_set'
+		  ORDER BY id DESC LIMIT 1`, userID, jobID).Scan(&source); err != nil {
+		t.Fatalf("read stage_set event source: %v", err)
+	}
+	if source != "system" {
+		t.Errorf("stage_set event source = %q, want system — the platform placed this, not the candidate", source)
+	}
+}
+
+// TestTailorCVBootstrap_HealsMissingSave: an existing tailored CV whose vacancy was
+// never (or no longer) on the board gets staged on the next bootstrap resume.
+func TestTailorCVBootstrap_HealsMissingSave(t *testing.T) {
+	h, iss, pool := newTailorAPI(t)
+	app := buildTailorApp(h, iss)
+	ctx := context.Background()
+
+	user := seedSubscriber(t, pool, "tailor-heal@example.test", true)
+	tok, _ := iss.Issue(user, testTokenVersion)
+	jobID := seedJobSlug(t, pool, "heal-eng")
+	seedFreshResume(t, pool, user)
+
+	resp := doCV(t, app, fiber.MethodPost, "/api/v1/me/cvs/tailor", tok, tailorCVRequest{JobSlug: "heal-eng"})
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("first bootstrap = %d, want 201", resp.StatusCode)
+	}
+	var first struct {
+		Data tailorCVResponse `json:"data"`
+	}
+	json.NewDecoder(resp.Body).Decode(&first)
+	resp.Body.Close()
+	assertVacancyOnKanban(t, pool, user, jobID)
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE applications SET stage = NULL WHERE user_id = $1 AND job_id = $2`, user, jobID); err != nil {
+		t.Fatalf("clear stage: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE user_jobs SET saved_at = NULL WHERE user_id = $1 AND job_id = $2`, user, jobID); err != nil {
+		t.Fatalf("clear save: %v", err)
+	}
+
+	resp = doCV(t, app, fiber.MethodPost, "/api/v1/me/cvs/tailor", tok, tailorCVRequest{JobSlug: "heal-eng"})
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("resume bootstrap = %d, want 201", resp.StatusCode)
+	}
+	var second struct {
+		Data tailorCVResponse `json:"data"`
+	}
+	json.NewDecoder(resp.Body).Decode(&second)
+	resp.Body.Close()
+	if second.Data.TailorCVID != first.Data.TailorCVID {
+		t.Fatalf("resume made a new CV (%s vs %s)", second.Data.TailorCVID, first.Data.TailorCVID)
+	}
+	assertVacancyOnKanban(t, pool, user, jobID)
+
+	// An advanced stage must not be pulled back to applied on resume.
+	if _, err := pool.Exec(ctx,
+		`UPDATE applications SET stage = 'interview' WHERE user_id = $1 AND job_id = $2`, user, jobID); err != nil {
+		t.Fatalf("advance stage: %v", err)
+	}
+	resp = doCV(t, app, fiber.MethodPost, "/api/v1/me/cvs/tailor", tok, tailorCVRequest{JobSlug: "heal-eng"})
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("third bootstrap = %d, want 201", resp.StatusCode)
+	}
+	resp.Body.Close()
+	var stage string
+	if err := pool.QueryRow(ctx,
+		`SELECT stage FROM applications WHERE user_id = $1 AND job_id = $2`, user, jobID).Scan(&stage); err != nil {
+		t.Fatalf("read stage: %v", err)
+	}
+	if stage != "interview" {
+		t.Errorf("stage = %q, want interview — tailor must not overwrite progress", stage)
+	}
+
+	// Clearing the board marks must not delete the tailored CV.
+	if _, err := pool.Exec(ctx,
+		`UPDATE applications SET stage = NULL WHERE user_id = $1 AND job_id = $2`, user, jobID); err != nil {
+		t.Fatalf("clear stage again: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE user_jobs SET saved_at = NULL WHERE user_id = $1 AND job_id = $2`, user, jobID); err != nil {
+		t.Fatalf("clear save again: %v", err)
+	}
+	var cvs int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM cvs WHERE user_id = $1 AND job_id = $2`, user, jobID).Scan(&cvs); err != nil {
+		t.Fatalf("count cvs: %v", err)
+	}
+	if cvs != 1 {
+		t.Errorf("cvs after clear = %d, want 1", cvs)
+	}
+}
+
+type boomBoarder struct{}
+
+func (boomBoarder) EnsureOnBoard(context.Context, int64, int64) error {
+	return errors.New("board boom")
+}
+
+// TestTailorCVBootstrap_SaveFailureStillSucceeds: once the CV and session exist, a
+// tracking write error must not turn the bootstrap into a failure.
+func TestTailorCVBootstrap_SaveFailureStillSucceeds(t *testing.T) {
+	h, iss, pool := newTailorAPI(t)
+	h.jobs = boomBoarder{}
+	app := buildTailorApp(h, iss)
+
+	user := seedSubscriber(t, pool, "tailor-save-fail@example.test", true)
+	tok, _ := iss.Issue(user, testTokenVersion)
+	jobID := seedJobSlug(t, pool, "fail-eng")
+	seedFreshResume(t, pool, user)
+
+	resp := doCV(t, app, fiber.MethodPost, "/api/v1/me/cvs/tailor", tok, tailorCVRequest{JobSlug: "fail-eng"})
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("bootstrap with board failure = %d, want 201", resp.StatusCode)
+	}
+	var got struct {
+		Data tailorCVResponse `json:"data"`
+	}
+	json.NewDecoder(resp.Body).Decode(&got)
+	resp.Body.Close()
+	if got.Data.TailorCVID == "" || got.Data.SessionID == "" {
+		t.Fatalf("response = %+v, want CV and session ids despite board failure", got.Data)
+	}
+	var cvs int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM cvs WHERE user_id = $1 AND job_id = $2`, user, jobID).Scan(&cvs); err != nil {
+		t.Fatalf("count cvs: %v", err)
+	}
+	if cvs != 1 {
+		t.Errorf("cvs = %d, want 1", cvs)
+	}
+}
+
+// TestTailorCVOutOfCredits: a caller with no points gets a 402 and no tailored CV or
+// session is created, even with a cached analysis and a résumé present.
+func TestTailorCVOutOfCredits(t *testing.T) {
+	h, iss, pool := newTailorAPI(t)
+	app := buildTailorApp(h, iss)
+	ctx := context.Background()
+
+	user := seedSubscriber(t, pool, "poor@example.test", true)
+	tok, _ := iss.Issue(user, testTokenVersion)
+	jobID := seedJobSlug(t, pool, "backend-eng")
+	seedAnalysis(t, h, user, jobID)
+	seedFreshResume(t, pool, user)
+
+	// Spend today's whole tailoring allowance so the bootstrap pre-check refuses. The
+	// counter is what the pre-check reads; seeding it directly is the state a candidate
+	// who already opened today's sessions would be in.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO usage_daily (user_id, feature, day, used) VALUES ($1, 'tailor', CURRENT_DATE, $2)`,
+		user, testTailorProDaily); err != nil {
+		t.Fatalf("seed a spent allowance: %v", err)
+	}
+
+	resp := doCV(t, app, fiber.MethodPost, "/api/v1/me/cvs/tailor", tok, tailorCVRequest{JobSlug: "backend-eng"})
+	if resp.StatusCode != fiber.StatusPaymentRequired {
+		t.Fatalf("out-of-credits tailor = %d, want 402", resp.StatusCode)
+	}
+	// The contract writes the refusal body the Fiber route wrote: the sentence, the
+	// allowance as a view and the upgrade link.
+	var refusal struct {
+		Error      string         `json:"error"`
+		Allowance  map[string]any `json:"allowance"`
+		UpgradeURL string         `json:"upgrade_url"`
+	}
+	decodeJSON(t, resp, &refusal)
+	if refusal.Error == "" || refusal.Allowance["feature"] != "tailor" || refusal.UpgradeURL != upgradePath {
+		t.Errorf("402 body = %+v, want the error, the tailor allowance and %q", refusal, upgradePath)
+	}
+	var cvs int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM cvs WHERE user_id=$1`, user).Scan(&cvs)
+	if cvs != 0 {
+		t.Errorf("cvs created on 402 = %d, want 0", cvs)
+	}
+}
+
+func mustParseUUID(t *testing.T, s string) uuid.UUID {
+	t.Helper()
+	id, err := uuid.Parse(s)
+	if err != nil {
+		t.Fatalf("uuid: %v", err)
+	}
+	return id
+}
+
+// seedSubscriber is seedAccount on the pro plan. Tailoring is a paid feature, so a free
+// account is refused before any allowance this file pins is read; every fixture here is
+// about what happens once a candidate may tailor at all.
+func seedSubscriber(t *testing.T, pool *pgxpool.Pool, email string, verified bool) int64 {
+	t.Helper()
+	id := seedAccount(t, pool, email, verified)
+	makePro(t, pool, id)
+	return id
+}
