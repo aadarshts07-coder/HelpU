@@ -1,17 +1,17 @@
 import React from 'react';
 import Link from 'next/link';
-import { 
-  Bot, 
-  Sparkles, 
-  ShieldCheck, 
-  ArrowRight, 
-  FileText, 
-  Search, 
-  Send, 
-  Camera, 
-  CheckCircle2, 
-  Lock, 
-  Zap, 
+import {
+  Bot,
+  Sparkles,
+  ShieldCheck,
+  ArrowRight,
+  FileText,
+  Search,
+  Send,
+  Camera,
+  CheckCircle2,
+  Lock,
+  Zap,
   SlidersHorizontal,
   ChevronRight
 } from 'lucide-react';
@@ -22,9 +22,9 @@ export default function LandingPage() {
       {/* Hero Section */}
       <section className="relative overflow-hidden pt-20 pb-24 lg:pt-32 lg:pb-36 bg-gradient-to-b from-indigo-50/60 via-white to-slate-50">
         <div className="absolute inset-0 -z-10 bg-[linear-gradient(to_right,#e2e8f0_1px,transparent_1px),linear-gradient(to_bottom,#e2e8f0_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] opacity-40"></div>
-        
+
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          
+
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-bold mb-8 animate-in fade-in slide-in-from-bottom-3">
             <Sparkles className="w-4 h-4 text-indigo-600" />
             <span>Next-Gen Autonomous Career Engine</span>
@@ -91,7 +91,7 @@ export default function LandingPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            
+
             {/* Step 1 */}
             <div className="bg-slate-50 rounded-2xl p-6 border border-slate-200/80 hover:border-indigo-200 transition-all hover:shadow-lg">
               <div className="w-12 h-12 rounded-xl bg-indigo-600 text-white font-black text-lg flex items-center justify-center mb-5 shadow-md shadow-indigo-100">
@@ -163,45 +163,45 @@ export default function LandingPage() {
       </section>
 
       {/* Safety & Security Highlights */}
-      <section className="py-20 bg-slate-900 text-white">
+      <section className="py-20 bg-slate-50/80 border-y border-slate-200 text-slate-900">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
             <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">
+              <span className="text-xs font-bold uppercase tracking-wider text-indigo-600">
                 Enterprise-Grade Privacy & Safety
               </span>
-              <h2 className="text-3xl sm:text-4xl font-extrabold mt-3 leading-tight">
+              <h2 className="text-3xl sm:text-4xl font-extrabold mt-3 leading-tight text-slate-900">
                 Designed to Protect Your Profile & Data at Every Step.
               </h2>
-              <p className="text-sm text-slate-300 mt-4 leading-relaxed">
+              <p className="text-sm text-slate-600 mt-4 leading-relaxed">
                 We believe job automation must be responsible, transparent, and respectful of portal boundaries. HELP U incorporates intelligent safety measures that protect you from bot bans or inaccurate submissions.
               </p>
 
-              <div className="mt-8 space-y-4 text-xs sm:text-sm text-slate-300">
+              <div className="mt-8 space-y-4 text-xs sm:text-sm text-slate-600">
                 <div className="flex items-start gap-3">
-                  <div className="p-1 rounded bg-indigo-500/20 text-indigo-400 mt-0.5">
+                  <div className="p-1 rounded bg-indigo-50 text-indigo-600 mt-0.5">
                     <Lock className="w-4 h-4" />
                   </div>
                   <div>
-                    <strong className="text-white">AES-256 Encrypted Portal Passwords:</strong> Passwords and cookies are encrypted at rest with hardware-grade AES-256-GCM.
+                    <strong className="text-slate-900">AES-256 Encrypted Portal Passwords:</strong> Passwords and cookies are encrypted at rest with hardware-grade AES-256-GCM.
                   </div>
                 </div>
 
                 <div className="flex items-start gap-3">
-                  <div className="p-1 rounded bg-indigo-500/20 text-indigo-400 mt-0.5">
+                  <div className="p-1 rounded bg-indigo-50 text-indigo-600 mt-0.5">
                     <ShieldCheck className="w-4 h-4" />
                   </div>
                   <div>
-                    <strong className="text-white">Smart Obstacle Detection:</strong> Detects CAPTCHAs, Cloudflare Turnstile, and login walls. Pauses and notifies you instead of guessing.
+                    <strong className="text-slate-900">Smart Obstacle Detection:</strong> Detects CAPTCHAs, Cloudflare Turnstile, and login walls. Pauses and notifies you instead of guessing.
                   </div>
                 </div>
 
                 <div className="flex items-start gap-3">
-                  <div className="p-1 rounded bg-indigo-500/20 text-indigo-400 mt-0.5">
+                  <div className="p-1 rounded bg-indigo-50 text-indigo-600 mt-0.5">
                     <SlidersHorizontal className="w-4 h-4" />
                   </div>
                   <div>
-                    <strong className="text-white">Review Mode Toggle:</strong> Choose "Ask me before submitting" to manually inspect filled forms with 1 click before final submission.
+                    <strong className="text-slate-900">Review Mode Toggle:</strong> Choose "Ask me before submitting" to manually inspect filled forms with 1 click before final submission.
                   </div>
                 </div>
               </div>
@@ -209,41 +209,41 @@ export default function LandingPage() {
               <div className="mt-8">
                 <Link
                   href="/settings"
-                  className="inline-flex items-center gap-2 text-xs font-bold text-indigo-400 hover:text-indigo-300"
+                  className="inline-flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700"
                 >
                   Configure security settings →
                 </Link>
               </div>
             </div>
 
-            <div className="bg-slate-800 rounded-3xl p-6 sm:p-8 border border-slate-700 shadow-2xl">
-              <h3 className="font-bold text-white text-base mb-4 flex items-center gap-2">
-                <Camera className="w-5 h-5 text-indigo-400" />
+            <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-light-md">
+              <h3 className="font-bold text-slate-900 text-base mb-4 flex items-center gap-2">
+                <Camera className="w-5 h-5 text-indigo-600" />
                 <span>Live Verification Screenshot Stream</span>
               </h3>
-              
-              <div className="rounded-2xl overflow-hidden border border-slate-700 bg-slate-950">
-                <div className="bg-slate-900 px-4 py-2 border-b border-slate-800 flex items-center justify-between text-xs text-slate-400">
+
+              <div className="rounded-2xl overflow-hidden border border-slate-200 bg-slate-50">
+                <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 flex items-center justify-between text-xs text-slate-600">
                   <span className="flex items-center gap-1.5 font-mono">
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
                     playwright_apply_worker.log
                   </span>
-                  <span className="text-emerald-400 font-bold">200 OK</span>
+                  <span className="text-emerald-700 font-bold">200 OK</span>
                 </div>
-                <div className="p-4 font-mono text-[11px] space-y-1 text-slate-300">
-                  <p className="text-indigo-400">[09:30:12] Navigating to Stripe Senior Full Stack Engineer form...</p>
+                <div className="p-4 font-mono text-[11px] space-y-1 text-slate-700">
+                  <p className="text-indigo-600">[09:30:12] Navigating to Stripe Senior Full Stack Engineer form...</p>
                   <p>[09:30:15] Form recognized: Greenhouse board detected</p>
                   <p>[09:30:17] Typing candidate name & contact info with human delays (80ms/char)</p>
-                  <p className="text-purple-400">[09:30:20] Claude answering custom prompt: "Why are you interested in Stripe?"</p>
-                  <p className="text-emerald-400">[09:30:23] Tailored ATS resume uploaded: Alex_Morgan_Resume_Stripe.docx</p>
-                  <p className="text-amber-400">[09:30:24] Review mode active: Holding application for user sign-off</p>
-                  <p className="text-slate-500">[09:30:25] Audit screenshot saved: /screenshots/app_stripe_2026.png</p>
+                  <p className="text-purple-600">[09:30:20] Claude answering custom prompt: "Why are you interested in Stripe?"</p>
+                  <p className="text-emerald-700">[09:30:23] Tailored ATS resume uploaded: Alex_Morgan_Resume_Stripe.docx</p>
+                  <p className="text-amber-700">[09:30:24] Review mode active: Holding application for user sign-off</p>
+                  <p className="text-slate-400">[09:30:25] Audit screenshot saved: /screenshots/app_stripe_2026.png</p>
                 </div>
               </div>
 
-              <div className="mt-4 pt-4 border-t border-slate-700/60 flex items-center justify-between text-xs text-slate-400">
-                <span>Total Applications Sent: <strong>142</strong></span>
-                <span className="text-emerald-400 font-bold">Success Rate: 94%</span>
+              <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                <span>Total Applications Sent: <strong className="text-slate-800">142</strong></span>
+                <span className="text-emerald-700 font-bold">Success Rate: 94%</span>
               </div>
             </div>
 

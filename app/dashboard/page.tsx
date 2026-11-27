@@ -3,7 +3,10 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
+import PageSlotReveal from '@/components/PageSlotReveal';
 import StatsCard from '@/components/StatsCard';
+import GaugeMeter from '@/components/GaugeMeter';
+import SpeedometerGauge from '@/components/SpeedometerGauge';
 import ScreenshotModal from '@/components/ScreenshotModal';
 import ConsentModal from '@/components/ConsentModal';
 import { 
@@ -96,7 +99,8 @@ export default function DashboardPage() {
     <div className="flex min-h-[calc(100vh-4rem)]">
       <Sidebar />
 
-      <main className="flex-1 p-6 lg:p-10 space-y-8 max-w-7xl mx-auto overflow-x-hidden">
+      <PageSlotReveal pageTitle="Dashboard">
+        <main className="flex-1 p-6 lg:p-10 space-y-8 max-w-7xl mx-auto overflow-x-hidden">
         
         {/* Welcome & Status Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-200">
@@ -129,9 +133,16 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Top Metrics Cards */}
-        {metrics && (
+        {/* Top Metrics Cards with Skeleton Shimmer Support & Staggered Animations */}
+        {loading && !metrics ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <StatsCard key={i} title="" icon={Send} loading={true} index={i} />
+            ))}
+          </div>
+        ) : metrics ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            {/* Card 1: Applications Sent with Daily Progress Bar */}
             <StatsCard
               title="Applications Sent"
               value={metrics.applicationsSent}
@@ -139,15 +150,34 @@ export default function DashboardPage() {
               badge="Submitted"
               badgeColor="indigo"
               subtitle={`Today: ${metrics.dailyApplicationsCount} / ${metrics.dailyLimit}`}
+              progressBarPercent={(metrics.dailyApplicationsCount / Math.max(1, metrics.dailyLimit)) * 100}
+              index={0}
             />
+
+            {/* Card 2: Redesigned 270° Modern Radial Gauge with Sample Size & Tooltip */}
             <StatsCard
               title="Success Rate"
-              value={`${metrics.successRate}%`}
               icon={TrendingUp}
-              badge="Verified"
-              badgeColor="emerald"
+              subtitle={`${metrics.applicationsSent} of ${metrics.applicationsSent} submitted`}
               trend="↑ High pass"
-            />
+              index={1}
+            >
+              <GaugeMeter
+                value={metrics.successRate}
+                sampleSize={`${metrics.applicationsSent} of ${metrics.applicationsSent} submitted`}
+                label="success"
+                statusBadge="Verified"
+                size={116}
+                tooltipBreakdown={{
+                  submitted: metrics.applicationsSent,
+                  failed: 0,
+                  pending: metrics.pendingReview,
+                  manualAction: metrics.needsManualAction,
+                }}
+              />
+            </StatsCard>
+
+            {/* Card 3: Pending Review (No stray dash, aligned height) */}
             <StatsCard
               title="Pending Review"
               value={metrics.pendingReview}
@@ -155,7 +185,10 @@ export default function DashboardPage() {
               badge="Needs Sign-off"
               badgeColor="amber"
               subtitle="Review Mode active"
+              index={2}
             />
+
+            {/* Card 4: Manual Action (Clean spacing & alignment) */}
             <StatsCard
               title="Manual Action"
               value={metrics.needsManualAction}
@@ -163,7 +196,10 @@ export default function DashboardPage() {
               badge="CAPTCHA / Login"
               badgeColor="rose"
               subtitle="Paused safely"
+              index={3}
             />
+
+            {/* Card 5: Interviews (With sparkle/pulse effect on +1 this week) */}
             <StatsCard
               title="Interviews"
               value={metrics.interviewsReceived}
@@ -171,36 +207,38 @@ export default function DashboardPage() {
               badge="Progressing"
               badgeColor="emerald"
               trend="🎉 +1 this week"
+              sparkle={true}
+              index={4}
             />
           </div>
-        )}
+        ) : null}
 
         {/* Automation Status Banner */}
         {settings && (
-          <div className="bg-gradient-to-r from-indigo-900 to-slate-900 text-white rounded-3xl p-6 sm:p-8 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div className="bg-gradient-to-br from-indigo-50/90 via-purple-50/60 to-indigo-50/40 border border-indigo-100/90 rounded-3xl p-6 sm:p-8 shadow-light-md flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
             <div className="space-y-2 max-w-xl">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 text-indigo-200 text-xs font-bold">
-                <Sparkles className="w-3.5 h-3.5 text-indigo-300" />
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-100/80 text-indigo-800 text-xs font-bold border border-indigo-200/60">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
                 <span>Stealth Background Worker Configuration</span>
               </div>
-              <h2 className="text-xl font-bold">
+              <h2 className="text-xl font-bold text-slate-900">
                 {settings.isPaused ? 'Automation is Paused' : 'Automation is Actively Running'}
               </h2>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                Applying to jobs with match score &gt;= <strong>{settings.jobMatchThreshold}%</strong>. Daily limit: <strong>{settings.dailyApplicationLimit} applications/day</strong>. Review Mode: <strong>{settings.reviewMode === 'ask_before_submitting' ? 'Ask me before submitting' : 'Auto-submit enabled'}</strong>.
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Applying to jobs with match score &gt;= <strong className="text-slate-900">{settings.jobMatchThreshold}%</strong>. Daily limit: <strong className="text-slate-900">{settings.dailyApplicationLimit} applications/day</strong>. Review Mode: <strong className="text-slate-900">{settings.reviewMode === 'ask_before_submitting' ? 'Ask me before submitting' : 'Auto-submit enabled'}</strong>.
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
               <Link
                 href="/settings"
-                className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition-colors border border-white/10"
+                className="px-4 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all border border-slate-200 shadow-xs"
               >
                 Modify Limits & Blacklist
               </Link>
               <Link
                 href="/tracker"
-                className="px-5 py-2.5 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-extrabold shadow-lg shadow-indigo-500/30 transition-all flex items-center gap-2"
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 via-violet-600 to-pink-600 hover:from-indigo-500 hover:via-violet-500 text-white text-xs font-extrabold shadow-md shadow-indigo-500/20 transition-all flex items-center gap-2"
               >
                 <span>Open Full Tracker</span>
                 <ArrowUpRight className="w-4 h-4" />
@@ -220,8 +258,12 @@ export default function DashboardPage() {
 
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="divide-y divide-slate-100">
-              {applications.slice(0, 5).map((app) => (
-                <div key={app.id} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/60 transition-colors">
+              {applications.slice(0, 5).map((app, idx) => (
+                <div
+                  key={app.id}
+                  style={{ animationDelay: `${idx * 65}ms` }}
+                  className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/60 transition-colors animate-row-cascade"
+                >
                   
                   <div className="flex items-start gap-3.5">
                     <div className="w-10 h-10 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center font-bold text-xs text-slate-700 shrink-0">
@@ -234,9 +276,10 @@ export default function DashboardPage() {
                         <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
                           {app.portal}
                         </span>
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
-                          {app.matchScore}% Match
-                        </span>
+                        <SpeedometerGauge
+                          value={app.matchScore}
+                          size="sm"
+                        />
                       </div>
 
                       <p className="text-xs text-slate-500 mt-1">
@@ -296,6 +339,7 @@ export default function DashboardPage() {
         </div>
 
       </main>
+      </PageSlotReveal>
 
       {/* Screenshot & Logs Modal */}
       <ScreenshotModal

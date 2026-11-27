@@ -118,7 +118,7 @@ export default function ATSResumePreview({
 
           <button
             onClick={handlePrintPDF}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-xl shadow-sm transition-all"
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition-all"
           >
             <Printer className="w-3.5 h-3.5" />
             Download PDF
@@ -126,10 +126,10 @@ export default function ATSResumePreview({
         </div>
       </div>
 
-      {/* Printable / Rendered ATS Document */}
+      {/* Printable / Rendered ATS Document with Paper Settle Animation */}
       <div 
         id="resume-printable-doc"
-        className="bg-white p-8 sm:p-12 rounded-2xl border border-slate-200 shadow-lg text-slate-800 font-sans max-w-4xl mx-auto print:shadow-none print:border-none print:p-0 print:m-0"
+        className="bg-white p-8 sm:p-12 rounded-2xl border border-slate-200 shadow-lg text-slate-800 font-sans max-w-4xl mx-auto print:shadow-none print:border-none print:p-0 print:m-0 animate-paper-settle transition-all"
         style={{ fontFamily: 'Calibri, Arial, sans-serif' }}
       >
         {/* Header */}

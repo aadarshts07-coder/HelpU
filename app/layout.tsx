@@ -1,6 +1,8 @@
 import './globals.css';
 import type { Metadata, Viewport } from 'next';
 import Navbar from '@/components/Navbar';
+import TopLoadingBar from '@/components/TopLoadingBar';
+import CookieConsentBanner from '@/components/CookieConsentBanner';
 
 export const metadata: Metadata = {
   title: 'HELP U — Autonomous AI Job Application & Resume Agent',
@@ -21,8 +23,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen bg-slate-50 antialiased text-slate-900">
+        <TopLoadingBar />
         <Navbar />
         {children}
+        <CookieConsentBanner />
       </body>
     </html>
   );

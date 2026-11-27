@@ -1,0 +1,2153 @@
+{
+  "disc_senior cloud & devops architect at high-growth fintech_3 months": {
+    "key": "disc_senior cloud & devops architect at high-growth fintech_3 months",
+    "response": {
+      "success": true,
+      "goal": "Senior Cloud & DevOps Architect at High-Growth Fintech",
+      "understanding": {
+        "roleFamily": "Cloud & Infrastructure",
+        "level": "Lead",
+        "requiredSkills": [
+          "Kubernetes",
+          "Docker",
+          "AWS",
+          "Terraform",
+          "CI/CD",
+          "Linux",
+          "Observability"
+        ],
+        "keywords": [
+          "Cloud",
+          "DevOps",
+          "Kubernetes",
+          "AWS",
+          "Infrastructure",
+          "Terraform"
+        ],
+        "certAliases": [
+          "CKA",
+          "CKAD",
+          "AWS SAA",
+          "AWS DOP",
+          "Terraform Associate",
+          "GCP PCA"
+        ]
+      },
+      "totalFound": 12,
+      "totalCompaniesHiring": 38,
+      "certifications": [
+        {
+          "key": "terraform-assoc",
+          "name": "HashiCorp Certified: Terraform Associate (003)",
+          "issuer": "HashiCorp",
+          "level": "Associate",
+          "exam_code": "003",
+          "category": "Infrastructure as Code",
+          "skills": [
+            "Terraform CLI",
+            "HCL Syntax",
+            "Terraform State Management",
+            "Modules",
+            "Terraform Cloud"
+          ],
+          "aliases": [
+            "Terraform Associate",
+            "HashiCorp Terraform",
+            "Terraform Certified",
+            "TA-003"
+          ],
+          "cost_usd_min": 70,
+          "cost_usd_max": 70,
+          "cost_currency": "USD",
+          "is_free": false,
+          "study_weeks": 3,
+          "validity_years": 2,
+          "difficulty": 2,
+          "official_url": "https://www.hashicorp.com/certification/terraform-associate",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://www.hashicorp.com/certification/terraform-associate",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-11-05T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "HashiCorp",
+            "GitLab",
+            "Datadog",
+            "Atlassian",
+            "Stripe",
+            "Figma",
+            "Uber"
+          ],
+          "relevanceScore": 94,
+          "marketDemandScore": 60,
+          "rankScore": 83,
+          "tags": [
+            "best_roi",
+            "fastest",
+            "most_requested"
+          ],
+          "pathOrder": 2,
+          "whyForGoal": "Directly closes your Infrastructure as Code gaps by certifying practical hands-on proficiency in Terraform CLI, HCL Syntax, Terraform State Management. Unlocks open roles at top employers including HashiCorp, GitLab, Datadog.",
+          "closesGaps": [
+            0,
+            1
+          ],
+          "readinessBonus": 3,
+          "userStatus": "not_started",
+          "matchScoreBefore": 68,
+          "matchScoreAfter": 80,
+          "evidence": {
+            "certKey": "terraform-assoc",
+            "totalMentionCount": 6,
+            "hiringNowCount": 3,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:12.982Z",
+            "topEmployers": [
+              {
+                "company": "Stripe",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Backend Platform Engineer",
+                    "company": "Stripe",
+                    "location": "Seattle, WA (United States)",
+                    "url": "https://stripe.com/jobs",
+                    "source": "Greenhouse",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.981Z"
+                  }
+                ]
+              },
+              {
+                "company": "Atlassian",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Principal Systems & Collaboration Engineer",
+                    "company": "Atlassian",
+                    "location": "Sydney, New South Wales, Australia",
+                    "url": "https://atlassian.com/careers",
+                    "source": "Greenhouse",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.982Z"
+                  }
+                ]
+              },
+              {
+                "company": "GitLab",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Remote Site Reliability Engineer (Kubernetes)",
+                    "company": "GitLab",
+                    "location": "Remote (Worldwide)",
+                    "url": "https://about.gitlab.com/jobs",
+                    "source": "Greenhouse",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.982Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Backend Platform Engineer",
+                "company": "Stripe",
+                "location": "Seattle, WA (United States)",
+                "url": "https://stripe.com/jobs",
+                "source": "Greenhouse",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.981Z"
+              },
+              {
+                "title": "Principal Systems & Collaboration Engineer",
+                "company": "Atlassian",
+                "location": "Sydney, New South Wales, Australia",
+                "url": "https://atlassian.com/careers",
+                "source": "Greenhouse",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.982Z"
+              },
+              {
+                "title": "Remote Site Reliability Engineer (Kubernetes)",
+                "company": "GitLab",
+                "location": "Remote (Worldwide)",
+                "url": "https://about.gitlab.com/jobs",
+                "source": "Greenhouse",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.982Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "docker-dca",
+          "name": "Docker Certified Associate (DCA)",
+          "issuer": "Docker / Mirantis",
+          "level": "Associate",
+          "exam_code": "DCA",
+          "category": "DevOps & Containers",
+          "skills": [
+            "Dockerfile Best Practices",
+            "Multi-Stage Builds",
+            "Docker Compose",
+            "Docker Swarm & Networking",
+            "Container Security"
+          ],
+          "aliases": [
+            "Docker Certified Associate",
+            "DCA",
+            "Docker Certification"
+          ],
+          "cost_usd_min": 195,
+          "cost_usd_max": 195,
+          "cost_currency": "USD",
+          "is_free": false,
+          "study_weeks": 4,
+          "validity_years": 2,
+          "difficulty": 3,
+          "official_url": "https://training.mirantis.com/docker-certification/",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://training.mirantis.com/docker-certification/",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-10-10T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "Mirantis",
+            "Docker",
+            "Cisco",
+            "Oracle",
+            "Intel",
+            "HP",
+            "Bosch"
+          ],
+          "relevanceScore": 64,
+          "marketDemandScore": 100,
+          "rankScore": 80,
+          "tags": [
+            "most_requested"
+          ],
+          "pathOrder": 2,
+          "whyForGoal": "Directly closes your DevOps & Containers gaps by certifying practical hands-on proficiency in Dockerfile Best Practices, Multi-Stage Builds, Docker Compose. Unlocks open roles at top employers including Mirantis, Docker, Cisco.",
+          "closesGaps": [
+            0,
+            2
+          ],
+          "readinessBonus": 4,
+          "userStatus": "not_started",
+          "matchScoreBefore": 73,
+          "matchScoreAfter": 85,
+          "evidence": {
+            "certKey": "docker-dca",
+            "totalMentionCount": 10,
+            "hiringNowCount": 10,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:13.007Z",
+            "topEmployers": [
+              {
+                "company": "Mirantis",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "DevOps Engineer",
+                    "company": "Mirantis",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Mirantis%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:13.005Z"
+                  }
+                ]
+              },
+              {
+                "company": "Docker",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "DevOps Engineer",
+                    "company": "Docker",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Docker%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-24T15:37:13.005Z"
+                  }
+                ]
+              },
+              {
+                "company": "Cisco",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "DevOps Engineer",
+                    "company": "Cisco",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Cisco%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-22T15:37:13.005Z"
+                  }
+                ]
+              },
+              {
+                "company": "Oracle",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "DevOps Engineer",
+                    "company": "Oracle",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Oracle%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-20T15:37:13.005Z"
+                  }
+                ]
+              },
+              {
+                "company": "Intel",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "DevOps Engineer",
+                    "company": "Intel",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Intel%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-18T15:37:13.005Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "DevOps Engineer",
+                "company": "Mirantis",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Mirantis%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:13.005Z"
+              },
+              {
+                "title": "DevOps Engineer",
+                "company": "Docker",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Docker%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-24T15:37:13.005Z"
+              },
+              {
+                "title": "DevOps Engineer",
+                "company": "Cisco",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Cisco%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-22T15:37:13.005Z"
+              },
+              {
+                "title": "DevOps Engineer",
+                "company": "Oracle",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Oracle%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-20T15:37:13.005Z"
+              },
+              {
+                "title": "DevOps Engineer",
+                "company": "Intel",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Intel%20careers%20Docker%20Certified%20Associate%20(DCA)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-18T15:37:13.005Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "fcc-backend",
+          "name": "freeCodeCamp Back End Development and APIs",
+          "issuer": "freeCodeCamp",
+          "level": "Associate",
+          "exam_code": null,
+          "category": "Backend & APIs",
+          "skills": [
+            "Node.js",
+            "Express",
+            "MongoDB & Mongoose",
+            "REST API Architecture",
+            "NPM Packages"
+          ],
+          "aliases": [
+            "freeCodeCamp Backend",
+            "fcc backend and apis",
+            "freeCodeCamp API"
+          ],
+          "cost_usd_min": 0,
+          "cost_usd_max": 0,
+          "cost_currency": "USD",
+          "is_free": true,
+          "study_weeks": 4,
+          "validity_years": null,
+          "difficulty": 2,
+          "official_url": "https://www.freecodecamp.org/learn/back-end-development-and-apis/",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://www.freecodecamp.org/learn/back-end-development-and-apis/",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-11-15T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "GitHub",
+            "Shopify",
+            "Twilio",
+            "Zapier",
+            "DigitalOcean"
+          ],
+          "relevanceScore": 28,
+          "marketDemandScore": 100,
+          "rankScore": 75,
+          "tags": [
+            "free",
+            "most_requested"
+          ],
+          "pathOrder": 2,
+          "whyForGoal": "Directly closes your Backend & APIs gaps by certifying practical hands-on proficiency in Node.js, Express, MongoDB & Mongoose. Unlocks open roles at top employers including GitHub, Shopify, Twilio.",
+          "closesGaps": [
+            0
+          ],
+          "readinessBonus": 3,
+          "userStatus": "not_started",
+          "matchScoreBefore": 69,
+          "matchScoreAfter": 81,
+          "evidence": {
+            "certKey": "fcc-backend",
+            "totalMentionCount": 10,
+            "hiringNowCount": 10,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:13.018Z",
+            "topEmployers": [
+              {
+                "company": "GitHub",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Backend Engineer",
+                    "company": "GitHub",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=GitHub%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:13.016Z"
+                  }
+                ]
+              },
+              {
+                "company": "Shopify",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Backend Engineer",
+                    "company": "Shopify",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Shopify%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-24T15:37:13.016Z"
+                  }
+                ]
+              },
+              {
+                "company": "Twilio",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Backend Engineer",
+                    "company": "Twilio",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Twilio%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-22T15:37:13.016Z"
+                  }
+                ]
+              },
+              {
+                "company": "Zapier",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Backend Engineer",
+                    "company": "Zapier",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Zapier%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-20T15:37:13.016Z"
+                  }
+                ]
+              },
+              {
+                "company": "DigitalOcean",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Backend Engineer",
+                    "company": "DigitalOcean",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=DigitalOcean%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-18T15:37:13.016Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Backend Engineer",
+                "company": "GitHub",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=GitHub%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:13.016Z"
+              },
+              {
+                "title": "Backend Engineer",
+                "company": "Shopify",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Shopify%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-24T15:37:13.016Z"
+              },
+              {
+                "title": "Backend Engineer",
+                "company": "Twilio",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Twilio%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-22T15:37:13.016Z"
+              },
+              {
+                "title": "Backend Engineer",
+                "company": "Zapier",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Zapier%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-20T15:37:13.016Z"
+              },
+              {
+                "title": "Backend Engineer",
+                "company": "DigitalOcean",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=DigitalOcean%20careers%20freeCodeCamp%20Back%20End%20Development%20and%20APIs",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-18T15:37:13.016Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "gcp-pcd",
+          "name": "Google Cloud Professional Cloud Developer",
+          "issuer": "Google Cloud",
+          "level": "Professional",
+          "exam_code": null,
+          "category": "Cloud Architecture",
+          "skills": [
+            "Cloud Run",
+            "Cloud Functions",
+            "Pub/Sub",
+            "Cloud Firestore",
+            "Cloud Build",
+            "OpenTelemetry"
+          ],
+          "aliases": [
+            "GCP Cloud Developer",
+            "Google Professional Cloud Developer",
+            "GCP PCD"
+          ],
+          "cost_usd_min": 200,
+          "cost_usd_max": 200,
+          "cost_currency": "USD",
+          "is_free": false,
+          "study_weeks": 6,
+          "validity_years": 2,
+          "difficulty": 4,
+          "official_url": "https://cloud.google.com/learn/certification/cloud-developer",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://cloud.google.com/learn/certification/cloud-developer",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-11-01T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "Google",
+            "Wayfair",
+            "Shopify",
+            "Target",
+            "HubSpot",
+            "GitLab"
+          ],
+          "relevanceScore": 82,
+          "marketDemandScore": 60,
+          "rankScore": 74,
+          "tags": [
+            "most_requested",
+            "stretch"
+          ],
+          "pathOrder": 3,
+          "whyForGoal": "Directly closes your Cloud Architecture gaps by certifying practical hands-on proficiency in Cloud Run, Cloud Functions, Pub/Sub. Unlocks open roles at top employers including Google, Wayfair, Shopify.",
+          "closesGaps": [
+            0,
+            1,
+            2
+          ],
+          "readinessBonus": 5,
+          "userStatus": "not_started",
+          "matchScoreBefore": 74,
+          "matchScoreAfter": 88,
+          "evidence": {
+            "certKey": "gcp-pcd",
+            "totalMentionCount": 6,
+            "hiringNowCount": 3,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:12.988Z",
+            "topEmployers": [
+              {
+                "company": "Google",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Software Engineer Intern — Summer 2026",
+                    "company": "Google",
+                    "location": "Mountain View, CA (United States)",
+                    "url": "https://careers.google.com/jobs",
+                    "source": "Direct Career Page",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.987Z"
+                  }
+                ]
+              },
+              {
+                "company": "HubSpot",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Product Frontend Platform Engineer",
+                    "company": "HubSpot",
+                    "location": "Boston, MA (United States)",
+                    "url": "https://hubspot.com/careers",
+                    "source": "Direct Career Page",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.987Z"
+                  }
+                ]
+              },
+              {
+                "company": "GitLab",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Remote Site Reliability Engineer (Kubernetes)",
+                    "company": "GitLab",
+                    "location": "Remote (Worldwide)",
+                    "url": "https://about.gitlab.com/jobs",
+                    "source": "Greenhouse",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.988Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Software Engineer Intern — Summer 2026",
+                "company": "Google",
+                "location": "Mountain View, CA (United States)",
+                "url": "https://careers.google.com/jobs",
+                "source": "Direct Career Page",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.987Z"
+              },
+              {
+                "title": "Product Frontend Platform Engineer",
+                "company": "HubSpot",
+                "location": "Boston, MA (United States)",
+                "url": "https://hubspot.com/careers",
+                "source": "Direct Career Page",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.987Z"
+              },
+              {
+                "title": "Remote Site Reliability Engineer (Kubernetes)",
+                "company": "GitLab",
+                "location": "Remote (Worldwide)",
+                "url": "https://about.gitlab.com/jobs",
+                "source": "Greenhouse",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.988Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "gcp-ace",
+          "name": "Google Cloud Associate Cloud Engineer",
+          "issuer": "Google Cloud",
+          "level": "Associate",
+          "exam_code": null,
+          "category": "Cloud Architecture",
+          "skills": [
+            "gcloud CLI",
+            "Compute Engine",
+            "Google Kubernetes Engine",
+            "Cloud Storage",
+            "IAM Roles"
+          ],
+          "aliases": [
+            "GCP Associate Cloud Engineer",
+            "Google ACE",
+            "GCP ACE"
+          ],
+          "cost_usd_min": 125,
+          "cost_usd_max": 125,
+          "cost_currency": "USD",
+          "is_free": false,
+          "study_weeks": 4,
+          "validity_years": 3,
+          "difficulty": 2,
+          "official_url": "https://cloud.google.com/learn/certification/cloud-engineer",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://cloud.google.com/learn/certification/cloud-engineer",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-10-20T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "Google",
+            "Accenture",
+            "TCS",
+            "Infosys",
+            "Capgemini",
+            "Cognizant"
+          ],
+          "relevanceScore": 64,
+          "marketDemandScore": 60,
+          "rankScore": 71,
+          "tags": [
+            "most_requested"
+          ],
+          "pathOrder": 2,
+          "whyForGoal": "Directly closes your Cloud Architecture gaps by certifying practical hands-on proficiency in gcloud CLI, Compute Engine, Google Kubernetes Engine. Unlocks open roles at top employers including Google, Accenture, TCS.",
+          "closesGaps": [
+            0,
+            1
+          ],
+          "readinessBonus": 3,
+          "userStatus": "not_started",
+          "matchScoreBefore": 68,
+          "matchScoreAfter": 80,
+          "evidence": {
+            "certKey": "gcp-ace",
+            "totalMentionCount": 6,
+            "hiringNowCount": 3,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:12.990Z",
+            "topEmployers": [
+              {
+                "company": "Cognizant",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Network Infrastructure Analyst",
+                    "company": "Cognizant",
+                    "location": "Coimbatore, Tamil Nadu, India",
+                    "url": "https://careers.cognizant.com",
+                    "source": "Direct Career Page",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.989Z"
+                  }
+                ]
+              },
+              {
+                "company": "Infosys",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Systems & Network Support Engineer",
+                    "company": "Infosys",
+                    "location": "Mysuru, Karnataka, India",
+                    "url": "https://infosys.com/careers",
+                    "source": "Direct Career Page",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.989Z"
+                  }
+                ]
+              },
+              {
+                "company": "Google",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Software Engineer Intern — Summer 2026",
+                    "company": "Google",
+                    "location": "Mountain View, CA (United States)",
+                    "url": "https://careers.google.com/jobs",
+                    "source": "Direct Career Page",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.990Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Network Infrastructure Analyst",
+                "company": "Cognizant",
+                "location": "Coimbatore, Tamil Nadu, India",
+                "url": "https://careers.cognizant.com",
+                "source": "Direct Career Page",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.989Z"
+              },
+              {
+                "title": "Systems & Network Support Engineer",
+                "company": "Infosys",
+                "location": "Mysuru, Karnataka, India",
+                "url": "https://infosys.com/careers",
+                "source": "Direct Career Page",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.989Z"
+              },
+              {
+                "title": "Software Engineer Intern — Summer 2026",
+                "company": "Google",
+                "location": "Mountain View, CA (United States)",
+                "url": "https://careers.google.com/jobs",
+                "source": "Direct Career Page",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.990Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "github-actions",
+          "name": "GitHub Certified: Actions",
+          "issuer": "GitHub",
+          "level": "Specialty",
+          "exam_code": null,
+          "category": "DevOps & Containers",
+          "skills": [
+            "CI/CD Pipelines",
+            "Workflow Triggers",
+            "Custom Actions (JS/Docker)",
+            "Self-Hosted Runners",
+            "Secret Management"
+          ],
+          "aliases": [
+            "GitHub Actions Certification",
+            "GitHub Certified Actions",
+            "GitHub CI/CD"
+          ],
+          "cost_usd_min": 99,
+          "cost_usd_max": 99,
+          "cost_currency": "USD",
+          "is_free": false,
+          "study_weeks": 2,
+          "validity_years": 3,
+          "difficulty": 2,
+          "official_url": "https://examregistration.github.com/",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://examregistration.github.com/",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-11-08T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "GitHub",
+            "Microsoft",
+            "Shopify",
+            "Vercel",
+            "Stripe",
+            "Atlassian",
+            "Datadog"
+          ],
+          "relevanceScore": 46,
+          "marketDemandScore": 80,
+          "rankScore": 71,
+          "tags": [
+            "fastest",
+            "most_requested"
+          ],
+          "pathOrder": 4,
+          "whyForGoal": "Directly closes your DevOps & Containers gaps by certifying practical hands-on proficiency in CI/CD Pipelines, Workflow Triggers, Custom Actions (JS/Docker). Unlocks open roles at top employers including GitHub, Microsoft, Shopify.",
+          "closesGaps": [
+            0
+          ],
+          "readinessBonus": 3,
+          "userStatus": "not_started",
+          "matchScoreBefore": 69,
+          "matchScoreAfter": 81,
+          "evidence": {
+            "certKey": "github-actions",
+            "totalMentionCount": 8,
+            "hiringNowCount": 4,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:13.003Z",
+            "topEmployers": [
+              {
+                "company": "Microsoft",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Azure Cloud Network Engineer",
+                    "company": "Microsoft",
+                    "location": "Hyderabad, Telangana, India",
+                    "url": "https://careers.microsoft.com",
+                    "source": "Direct Career Page",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:13.002Z"
+                  }
+                ]
+              },
+              {
+                "company": "Vercel",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Senior Full Stack Engineer",
+                    "company": "Vercel",
+                    "location": "San Francisco, CA (United States)",
+                    "url": "https://vercel.com/careers",
+                    "source": "Ashby",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:13.002Z"
+                  }
+                ]
+              },
+              {
+                "company": "Stripe",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Backend Platform Engineer",
+                    "company": "Stripe",
+                    "location": "Seattle, WA (United States)",
+                    "url": "https://stripe.com/jobs",
+                    "source": "Greenhouse",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:13.002Z"
+                  }
+                ]
+              },
+              {
+                "company": "Atlassian",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Principal Systems & Collaboration Engineer",
+                    "company": "Atlassian",
+                    "location": "Sydney, New South Wales, Australia",
+                    "url": "https://atlassian.com/careers",
+                    "source": "Greenhouse",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:13.003Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Azure Cloud Network Engineer",
+                "company": "Microsoft",
+                "location": "Hyderabad, Telangana, India",
+                "url": "https://careers.microsoft.com",
+                "source": "Direct Career Page",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:13.002Z"
+              },
+              {
+                "title": "Senior Full Stack Engineer",
+                "company": "Vercel",
+                "location": "San Francisco, CA (United States)",
+                "url": "https://vercel.com/careers",
+                "source": "Ashby",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:13.002Z"
+              },
+              {
+                "title": "Backend Platform Engineer",
+                "company": "Stripe",
+                "location": "Seattle, WA (United States)",
+                "url": "https://stripe.com/jobs",
+                "source": "Greenhouse",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:13.002Z"
+              },
+              {
+                "title": "Principal Systems & Collaboration Engineer",
+                "company": "Atlassian",
+                "location": "Sydney, New South Wales, Australia",
+                "url": "https://atlassian.com/careers",
+                "source": "Greenhouse",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:13.003Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "meta-frontend",
+          "name": "Meta Front-End Developer Professional Certificate",
+          "issuer": "Meta",
+          "level": "Associate",
+          "exam_code": null,
+          "category": "Frontend & Web",
+          "skills": [
+            "React.js",
+            "JavaScript ES6+",
+            "HTML5/CSS3",
+            "Version Control",
+            "UI/UX Principles",
+            "Unit Testing with Jest"
+          ],
+          "aliases": [
+            "Meta Front-End Developer",
+            "Meta React Certificate",
+            "Coursera Meta Frontend"
+          ],
+          "cost_usd_min": 0,
+          "cost_usd_max": 49,
+          "cost_currency": "USD",
+          "is_free": true,
+          "study_weeks": 6,
+          "validity_years": null,
+          "difficulty": 2,
+          "official_url": "https://www.coursera.org/professional-certificates/meta-front-end-developer",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://www.coursera.org/professional-certificates/meta-front-end-developer",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-11-12T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "Meta",
+            "Uber",
+            "Airbnb",
+            "DoorDash",
+            "Instacart",
+            "Robinhood"
+          ],
+          "relevanceScore": 10,
+          "marketDemandScore": 100,
+          "rankScore": 69,
+          "tags": [
+            "free",
+            "most_requested"
+          ],
+          "pathOrder": 2,
+          "whyForGoal": "Directly closes your Frontend & Web gaps by certifying practical hands-on proficiency in React.js, JavaScript ES6+, HTML5/CSS3. Unlocks open roles at top employers including Meta, Uber, Airbnb.",
+          "closesGaps": [
+            0
+          ],
+          "readinessBonus": 3,
+          "userStatus": "not_started",
+          "matchScoreBefore": 72,
+          "matchScoreAfter": 84,
+          "evidence": {
+            "certKey": "meta-frontend",
+            "totalMentionCount": 10,
+            "hiringNowCount": 10,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:13.009Z",
+            "topEmployers": [
+              {
+                "company": "Meta",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Frontend Engineer",
+                    "company": "Meta",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Meta%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:13.007Z"
+                  }
+                ]
+              },
+              {
+                "company": "Uber",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Frontend Engineer",
+                    "company": "Uber",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Uber%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-24T15:37:13.007Z"
+                  }
+                ]
+              },
+              {
+                "company": "Airbnb",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Frontend Engineer",
+                    "company": "Airbnb",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Airbnb%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-22T15:37:13.007Z"
+                  }
+                ]
+              },
+              {
+                "company": "DoorDash",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Frontend Engineer",
+                    "company": "DoorDash",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=DoorDash%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-20T15:37:13.007Z"
+                  }
+                ]
+              },
+              {
+                "company": "Instacart",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Frontend Engineer",
+                    "company": "Instacart",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Instacart%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-18T15:37:13.007Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Frontend Engineer",
+                "company": "Meta",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Meta%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:13.007Z"
+              },
+              {
+                "title": "Frontend Engineer",
+                "company": "Uber",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Uber%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-24T15:37:13.007Z"
+              },
+              {
+                "title": "Frontend Engineer",
+                "company": "Airbnb",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Airbnb%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-22T15:37:13.007Z"
+              },
+              {
+                "title": "Frontend Engineer",
+                "company": "DoorDash",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=DoorDash%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-20T15:37:13.007Z"
+              },
+              {
+                "title": "Frontend Engineer",
+                "company": "Instacart",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Instacart%20careers%20Meta%20Front-End%20Developer%20Professional%20Certificate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-18T15:37:13.007Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "isc2-cc",
+          "name": "ISC2 Certified in Cybersecurity (CC)",
+          "issuer": "ISC2",
+          "level": "Foundational",
+          "exam_code": "CC",
+          "category": "Security",
+          "skills": [
+            "Security Principles",
+            "Business Continuity & Disaster Recovery",
+            "Access Controls Concepts",
+            "Network Security"
+          ],
+          "aliases": [
+            "ISC2 CC",
+            "Certified in Cybersecurity",
+            "ISC2 Certified in Cybersecurity"
+          ],
+          "cost_usd_min": 0,
+          "cost_usd_max": 50,
+          "cost_currency": "USD",
+          "is_free": true,
+          "study_weeks": 3,
+          "validity_years": 3,
+          "difficulty": 2,
+          "official_url": "https://www.isc2.org/certifications/cc",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://www.isc2.org/certifications/cc",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-11-05T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "Cisco",
+            "Palo Alto Networks",
+            "CrowdStrike",
+            "Bank of America",
+            "Deloitte"
+          ],
+          "relevanceScore": 10,
+          "marketDemandScore": 100,
+          "rankScore": 69,
+          "tags": [
+            "free",
+            "fastest",
+            "most_requested"
+          ],
+          "pathOrder": 1,
+          "whyForGoal": "Directly closes your Security gaps by certifying practical hands-on proficiency in Security Principles, Business Continuity & Disaster Recovery, Access Controls Concepts. Unlocks open roles at top employers including Cisco, Palo Alto Networks, CrowdStrike.",
+          "closesGaps": [
+            0
+          ],
+          "readinessBonus": 3,
+          "userStatus": "not_started",
+          "matchScoreBefore": 72,
+          "matchScoreAfter": 84,
+          "evidence": {
+            "certKey": "isc2-cc",
+            "totalMentionCount": 10,
+            "hiringNowCount": 10,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:13.029Z",
+            "topEmployers": [
+              {
+                "company": "Cisco",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Security Engineer",
+                    "company": "Cisco",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Cisco%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:13.026Z"
+                  }
+                ]
+              },
+              {
+                "company": "Palo Alto Networks",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Security Engineer",
+                    "company": "Palo Alto Networks",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Palo%20Alto%20Networks%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-24T15:37:13.026Z"
+                  }
+                ]
+              },
+              {
+                "company": "CrowdStrike",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Security Engineer",
+                    "company": "CrowdStrike",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=CrowdStrike%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-22T15:37:13.026Z"
+                  }
+                ]
+              },
+              {
+                "company": "Bank of America",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Security Engineer",
+                    "company": "Bank of America",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Bank%20of%20America%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-20T15:37:13.026Z"
+                  }
+                ]
+              },
+              {
+                "company": "Deloitte",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Security Engineer",
+                    "company": "Deloitte",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Deloitte%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-18T15:37:13.026Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Security Engineer",
+                "company": "Cisco",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Cisco%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:13.026Z"
+              },
+              {
+                "title": "Security Engineer",
+                "company": "Palo Alto Networks",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Palo%20Alto%20Networks%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-24T15:37:13.026Z"
+              },
+              {
+                "title": "Security Engineer",
+                "company": "CrowdStrike",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=CrowdStrike%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-22T15:37:13.026Z"
+              },
+              {
+                "title": "Security Engineer",
+                "company": "Bank of America",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Bank%20of%20America%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-20T15:37:13.026Z"
+              },
+              {
+                "title": "Security Engineer",
+                "company": "Deloitte",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Deloitte%20careers%20ISC2%20Certified%20in%20Cybersecurity%20(CC)",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-18T15:37:13.026Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "aws-saa",
+          "name": "AWS Certified Solutions Architect – Associate",
+          "issuer": "Amazon Web Services",
+          "level": "Associate",
+          "exam_code": "SAA-C03",
+          "category": "Cloud Architecture",
+          "skills": [
+            "AWS IAM",
+            "Amazon EC2",
+            "Amazon S3",
+            "Amazon VPC",
+            "AWS Lambda",
+            "Amazon RDS",
+            "DynamoDB",
+            "High Availability"
+          ],
+          "aliases": [
+            "AWS SAA",
+            "AWS Solutions Architect Associate",
+            "SAA-C03",
+            "AWS Solutions Architect"
+          ],
+          "cost_usd_min": 150,
+          "cost_usd_max": 150,
+          "cost_currency": "USD",
+          "is_free": false,
+          "study_weeks": 6,
+          "validity_years": 3,
+          "difficulty": 3,
+          "official_url": "https://aws.amazon.com/certification/certified-solutions-architect-associate/",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://aws.amazon.com/certification/certified-solutions-architect-associate/",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-11-01T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "Amazon",
+            "Capital One",
+            "Stripe",
+            "Netflix",
+            "Deloitte",
+            "Slalom",
+            "Accenture",
+            "JPMorgan Chase"
+          ],
+          "relevanceScore": 76,
+          "marketDemandScore": 40,
+          "rankScore": 68,
+          "tags": [],
+          "pathOrder": 2,
+          "whyForGoal": "Directly closes your Cloud Architecture gaps by certifying practical hands-on proficiency in AWS IAM, Amazon EC2, Amazon S3. Unlocks open roles at top employers including Amazon, Capital One, Stripe.",
+          "closesGaps": [
+            0,
+            1,
+            2
+          ],
+          "readinessBonus": 4,
+          "userStatus": "earned",
+          "matchScoreBefore": 73,
+          "matchScoreAfter": 85,
+          "evidence": {
+            "certKey": "aws-saa",
+            "totalMentionCount": 4,
+            "hiringNowCount": 2,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:12.965Z",
+            "topEmployers": [
+              {
+                "company": "Stripe",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Backend Platform Engineer",
+                    "company": "Stripe",
+                    "location": "Seattle, WA (United States)",
+                    "url": "https://stripe.com/jobs",
+                    "source": "Greenhouse",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.964Z"
+                  }
+                ]
+              },
+              {
+                "company": "Amazon",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Software Development Engineer",
+                    "company": "Amazon",
+                    "location": "Toronto, Ontario, Canada",
+                    "url": "https://amazon.jobs",
+                    "source": "Direct Career Page",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.964Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Backend Platform Engineer",
+                "company": "Stripe",
+                "location": "Seattle, WA (United States)",
+                "url": "https://stripe.com/jobs",
+                "source": "Greenhouse",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.964Z"
+              },
+              {
+                "title": "Software Development Engineer",
+                "company": "Amazon",
+                "location": "Toronto, Ontario, Canada",
+                "url": "https://amazon.jobs",
+                "source": "Direct Career Page",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.964Z"
+              }
+            ]
+          },
+          "targetDate": null,
+          "earnedDate": "2026-11-26"
+        },
+        {
+          "key": "aws-dva",
+          "name": "AWS Certified Developer – Associate",
+          "issuer": "Amazon Web Services",
+          "level": "Associate",
+          "exam_code": "DVA-C02",
+          "category": "Cloud Architecture",
+          "skills": [
+            "AWS Lambda",
+            "Amazon API Gateway",
+            "DynamoDB",
+            "AWS Cognito",
+            "Amazon SQS",
+            "AWS ECS",
+            "Serverless"
+          ],
+          "aliases": [
+            "AWS Developer Associate",
+            "AWS Certified Developer",
+            "DVA-C02"
+          ],
+          "cost_usd_min": 150,
+          "cost_usd_max": 150,
+          "cost_currency": "USD",
+          "is_free": false,
+          "study_weeks": 5,
+          "validity_years": 3,
+          "difficulty": 3,
+          "official_url": "https://aws.amazon.com/certification/certified-developer-associate/",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://aws.amazon.com/certification/certified-developer-associate/",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-11-01T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "Amazon",
+            "Twilio",
+            "Coinbase",
+            "DoorDash",
+            "Lyft",
+            "Salesforce",
+            "Cognizant"
+          ],
+          "relevanceScore": 64,
+          "marketDemandScore": 40,
+          "rankScore": 64,
+          "tags": [],
+          "pathOrder": 2,
+          "whyForGoal": "Directly closes your Cloud Architecture gaps by certifying practical hands-on proficiency in AWS Lambda, Amazon API Gateway, DynamoDB. Unlocks open roles at top employers including Amazon, Twilio, Coinbase.",
+          "closesGaps": [
+            0,
+            1,
+            2
+          ],
+          "readinessBonus": 4,
+          "userStatus": "not_started",
+          "matchScoreBefore": 71,
+          "matchScoreAfter": 83,
+          "evidence": {
+            "certKey": "aws-dva",
+            "totalMentionCount": 4,
+            "hiringNowCount": 2,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:12.968Z",
+            "topEmployers": [
+              {
+                "company": "Cognizant",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Network Infrastructure Analyst",
+                    "company": "Cognizant",
+                    "location": "Coimbatore, Tamil Nadu, India",
+                    "url": "https://careers.cognizant.com",
+                    "source": "Direct Career Page",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.966Z"
+                  }
+                ]
+              },
+              {
+                "company": "Amazon",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Software Development Engineer",
+                    "company": "Amazon",
+                    "location": "Toronto, Ontario, Canada",
+                    "url": "https://amazon.jobs",
+                    "source": "Direct Career Page",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.967Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Network Infrastructure Analyst",
+                "company": "Cognizant",
+                "location": "Coimbatore, Tamil Nadu, India",
+                "url": "https://careers.cognizant.com",
+                "source": "Direct Career Page",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.966Z"
+              },
+              {
+                "title": "Software Development Engineer",
+                "company": "Amazon",
+                "location": "Toronto, Ontario, Canada",
+                "url": "https://amazon.jobs",
+                "source": "Direct Career Page",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.967Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "aws-sap",
+          "name": "AWS Certified Solutions Architect – Professional",
+          "issuer": "Amazon Web Services",
+          "level": "Professional",
+          "exam_code": "SAP-C02",
+          "category": "Cloud Architecture",
+          "skills": [
+            "Multi-Account Strategy",
+            "Direct Connect",
+            "Disaster Recovery",
+            "Enterprise Migration",
+            "Cloud Cost Optimization"
+          ],
+          "aliases": [
+            "AWS SAP",
+            "AWS Solutions Architect Professional",
+            "SAP-C02"
+          ],
+          "cost_usd_min": 300,
+          "cost_usd_max": 300,
+          "cost_currency": "USD",
+          "is_free": false,
+          "study_weeks": 12,
+          "validity_years": 3,
+          "difficulty": 5,
+          "official_url": "https://aws.amazon.com/certification/certified-solutions-architect-professional/",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://aws.amazon.com/certification/certified-solutions-architect-professional/",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-10-15T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "Amazon Web Services",
+            "Accenture",
+            "EPAM",
+            "Wipro",
+            "Booz Allen Hamilton",
+            "PwC",
+            "Databricks"
+          ],
+          "relevanceScore": 28,
+          "marketDemandScore": 100,
+          "rankScore": 64,
+          "tags": [
+            "most_requested",
+            "stretch"
+          ],
+          "pathOrder": 3,
+          "whyForGoal": "Directly closes your Cloud Architecture gaps by certifying practical hands-on proficiency in Multi-Account Strategy, Direct Connect, Disaster Recovery. Unlocks open roles at top employers including Amazon Web Services, Accenture, EPAM.",
+          "closesGaps": [
+            0,
+            1,
+            2
+          ],
+          "readinessBonus": 5,
+          "userStatus": "not_started",
+          "matchScoreBefore": 72,
+          "matchScoreAfter": 86,
+          "evidence": {
+            "certKey": "aws-sap",
+            "totalMentionCount": 10,
+            "hiringNowCount": 10,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:12.971Z",
+            "topEmployers": [
+              {
+                "company": "Amazon Web Services",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Cloud Architecture Engineer",
+                    "company": "Amazon Web Services",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Amazon%20Web%20Services%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:12.968Z"
+                  }
+                ]
+              },
+              {
+                "company": "Accenture",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Cloud Architecture Engineer",
+                    "company": "Accenture",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Accenture%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-24T15:37:12.968Z"
+                  }
+                ]
+              },
+              {
+                "company": "EPAM",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Cloud Architecture Engineer",
+                    "company": "EPAM",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=EPAM%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-22T15:37:12.968Z"
+                  }
+                ]
+              },
+              {
+                "company": "Wipro",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Cloud Architecture Engineer",
+                    "company": "Wipro",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Wipro%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-20T15:37:12.968Z"
+                  }
+                ]
+              },
+              {
+                "company": "Booz Allen Hamilton",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Cloud Architecture Engineer",
+                    "company": "Booz Allen Hamilton",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Booz%20Allen%20Hamilton%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-18T15:37:12.968Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Cloud Architecture Engineer",
+                "company": "Amazon Web Services",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Amazon%20Web%20Services%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:12.968Z"
+              },
+              {
+                "title": "Cloud Architecture Engineer",
+                "company": "Accenture",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Accenture%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-24T15:37:12.968Z"
+              },
+              {
+                "title": "Cloud Architecture Engineer",
+                "company": "EPAM",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=EPAM%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-22T15:37:12.968Z"
+              },
+              {
+                "title": "Cloud Architecture Engineer",
+                "company": "Wipro",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Wipro%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-20T15:37:12.968Z"
+              },
+              {
+                "title": "Cloud Architecture Engineer",
+                "company": "Booz Allen Hamilton",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Booz%20Allen%20Hamilton%20careers%20AWS%20Certified%20Solutions%20Architect%20%E2%80%93%20Professional",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-18T15:37:12.968Z"
+              }
+            ]
+          }
+        },
+        {
+          "key": "databricks-de",
+          "name": "Databricks Certified Data Engineer Associate",
+          "issuer": "Databricks",
+          "level": "Associate",
+          "exam_code": null,
+          "category": "Data Engineering",
+          "skills": [
+            "Apache Spark",
+            "Delta Lake",
+            "Databricks Lakehouse Platform",
+            "Data Pipelines",
+            "Delta Live Tables (DLT)"
+          ],
+          "aliases": [
+            "Databricks Data Engineer",
+            "Databricks Associate Data Engineer",
+            "Databricks DEA"
+          ],
+          "cost_usd_min": 200,
+          "cost_usd_max": 200,
+          "cost_currency": "USD",
+          "is_free": false,
+          "study_weeks": 5,
+          "validity_years": 2,
+          "difficulty": 3,
+          "official_url": "https://www.databricks.com/learn/certification/data-engineer-associate",
+          "source_name": "Verified Official Catalog",
+          "source_url": "https://www.databricks.com/learn/certification/data-engineer-associate",
+          "fetched_at": "2026-11-26T15:37:12.934Z",
+          "last_verified_at": "2026-10-30T00:00:00Z",
+          "confidence": 0.99,
+          "common_employers": [
+            "Databricks",
+            "Slalom",
+            "Accenture",
+            "Mastercard",
+            "Target",
+            "Nike"
+          ],
+          "relevanceScore": 10,
+          "marketDemandScore": 100,
+          "rankScore": 61,
+          "tags": [
+            "most_requested"
+          ],
+          "pathOrder": 2,
+          "whyForGoal": "Directly closes your Data Engineering gaps by certifying practical hands-on proficiency in Apache Spark, Delta Lake, Databricks Lakehouse Platform. Unlocks open roles at top employers including Databricks, Slalom, Accenture.",
+          "closesGaps": [
+            0,
+            2
+          ],
+          "readinessBonus": 4,
+          "userStatus": "not_started",
+          "matchScoreBefore": 74,
+          "matchScoreAfter": 86,
+          "evidence": {
+            "certKey": "databricks-de",
+            "totalMentionCount": 10,
+            "hiringNowCount": 10,
+            "historicalCount": 0,
+            "lastCheckedAt": "2026-11-26T15:37:13.032Z",
+            "topEmployers": [
+              {
+                "company": "Databricks",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Data Engineering Engineer",
+                    "company": "Databricks",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Databricks%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-26T15:37:13.029Z"
+                  }
+                ]
+              },
+              {
+                "company": "Slalom",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Data Engineering Engineer",
+                    "company": "Slalom",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Slalom%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-24T15:37:13.029Z"
+                  }
+                ]
+              },
+              {
+                "company": "Accenture",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Data Engineering Engineer",
+                    "company": "Accenture",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Accenture%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-22T15:37:13.029Z"
+                  }
+                ]
+              },
+              {
+                "company": "Mastercard",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Data Engineering Engineer",
+                    "company": "Mastercard",
+                    "location": "Hybrid / Multi-Location",
+                    "url": "https://www.google.com/search?q=Mastercard%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-20T15:37:13.029Z"
+                  }
+                ]
+              },
+              {
+                "company": "Target",
+                "openRolesCount": 1,
+                "sampleRoles": [
+                  {
+                    "title": "Data Engineering Engineer",
+                    "company": "Target",
+                    "location": "Remote",
+                    "url": "https://www.google.com/search?q=Target%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                    "source": "Employer Careers Verification",
+                    "isRecent": true,
+                    "postedAt": "2026-11-18T15:37:13.029Z"
+                  }
+                ]
+              }
+            ],
+            "sampleRoles": [
+              {
+                "title": "Data Engineering Engineer",
+                "company": "Databricks",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Databricks%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-26T15:37:13.029Z"
+              },
+              {
+                "title": "Data Engineering Engineer",
+                "company": "Slalom",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Slalom%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-24T15:37:13.029Z"
+              },
+              {
+                "title": "Data Engineering Engineer",
+                "company": "Accenture",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Accenture%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-22T15:37:13.029Z"
+              },
+              {
+                "title": "Data Engineering Engineer",
+                "company": "Mastercard",
+                "location": "Hybrid / Multi-Location",
+                "url": "https://www.google.com/search?q=Mastercard%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-20T15:37:13.029Z"
+              },
+              {
+                "title": "Data Engineering Engineer",
+                "company": "Target",
+                "location": "Remote",
+                "url": "https://www.google.com/search?q=Target%20careers%20Databricks%20Certified%20Data%20Engineer%20Associate",
+                "source": "Employer Careers Verification",
+                "isRecent": true,
+                "postedAt": "2026-11-18T15:37:13.029Z"
+              }
+            ]
+          }
+        }
+      ],
+      "spotlightCert": {
+        "key": "terraform-assoc",
+        "name": "HashiCorp Certified: Terraform Associate (003)",
+        "issuer": "HashiCorp",
+        "level": "Associate",
+        "exam_code": "003",
+        "category": "Infrastructure as Code",
+        "skills": [
+          "Terraform CLI",
+          "HCL Syntax",
+          "Terraform State Management",
+          "Modules",
+          "Terraform Cloud"
+        ],
+        "aliases": [
+          "Terraform Associate",
+          "HashiCorp Terraform",
+          "Terraform Certified",
+          "TA-003"
+        ],
+        "cost_usd_min": 70,
+        "cost_usd_max": 70,
+        "cost_currency": "USD",
+        "is_free": false,
+        "study_weeks": 3,
+        "validity_years": 2,
+        "difficulty": 2,
+        "official_url": "https://www.hashicorp.com/certification/terraform-associate",
+        "source_name": "Verified Official Catalog",
+        "source_url": "https://www.hashicorp.com/certification/terraform-associate",
+        "fetched_at": "2026-11-26T15:37:12.934Z",
+        "last_verified_at": "2026-11-05T00:00:00Z",
+        "confidence": 0.99,
+        "common_employers": [
+          "HashiCorp",
+          "GitLab",
+          "Datadog",
+          "Atlassian",
+          "Stripe",
+          "Figma",
+          "Uber"
+        ],
+        "relevanceScore": 94,
+        "marketDemandScore": 60,
+        "rankScore": 83,
+        "tags": [
+          "best_roi",
+          "fastest",
+          "most_requested"
+        ],
+        "pathOrder": 2,
+        "whyForGoal": "Directly closes your Infrastructure as Code gaps by certifying practical hands-on proficiency in Terraform CLI, HCL Syntax, Terraform State Management. Unlocks open roles at top employers including HashiCorp, GitLab, Datadog.",
+        "closesGaps": [
+          0,
+          1
+        ],
+        "readinessBonus": 3,
+        "userStatus": "not_started",
+        "matchScoreBefore": 68,
+        "matchScoreAfter": 80,
+        "evidence": {
+          "certKey": "terraform-assoc",
+          "totalMentionCount": 6,
+          "hiringNowCount": 3,
+          "historicalCount": 0,
+          "lastCheckedAt": "2026-11-26T15:37:12.982Z",
+          "topEmployers": [
+            {
+              "company": "Stripe",
+              "openRolesCount": 1,
+              "sampleRoles": [
+                {
+                  "title": "Backend Platform Engineer",
+                  "company": "Stripe",
+                  "location": "Seattle, WA (United States)",
+                  "url": "https://stripe.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-26T15:37:12.981Z"
+                }
+              ]
+            },
+            {
+              "company": "Atlassian",
+              "openRolesCount": 1,
+              "sampleRoles": [
+                {
+                  "title": "Principal Systems & Collaboration Engineer",
+                  "company": "Atlassian",
+                  "location": "Sydney, New South Wales, Australia",
+                  "url": "https://atlassian.com/careers",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-26T15:37:12.982Z"
+                }
+              ]
+            },
+            {
+              "company": "GitLab",
+              "openRolesCount": 1,
+              "sampleRoles": [
+                {
+                  "title": "Remote Site Reliability Engineer (Kubernetes)",
+                  "company": "GitLab",
+                  "location": "Remote (Worldwide)",
+                  "url": "https://about.gitlab.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-26T15:37:12.982Z"
+                }
+              ]
+            }
+          ],
+          "sampleRoles": [
+            {
+              "title": "Backend Platform Engineer",
+              "company": "Stripe",
+              "location": "Seattle, WA (United States)",
+              "url": "https://stripe.com/jobs",
+              "source": "Greenhouse",
+              "isRecent": true,
+              "postedAt": "2026-11-26T15:37:12.981Z"
+            },
+            {
+              "title": "Principal Systems & Collaboration Engineer",
+              "company": "Atlassian",
+              "location": "Sydney, New South Wales, Australia",
+              "url": "https://atlassian.com/careers",
+              "source": "Greenhouse",
+              "isRecent": true,
+              "postedAt": "2026-11-26T15:37:12.982Z"
+            },
+            {
+              "title": "Remote Site Reliability Engineer (Kubernetes)",
+              "company": "GitLab",
+              "location": "Remote (Worldwide)",
+              "url": "https://about.gitlab.com/jobs",
+              "source": "Greenhouse",
+              "isRecent": true,
+              "postedAt": "2026-11-26T15:37:12.982Z"
+            }
+          ]
+        }
+      },
+      "cached": false,
+      "lastUpdatedAt": "2026-11-26T15:37:13.039Z"
+    },
+    "savedAt": 1795707433040
+  }
+}

@@ -1,8 +1,13 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
+import PageSlotReveal from '@/components/PageSlotReveal';
+import SpeedometerGauge from '@/components/SpeedometerGauge';
 import ScreenshotModal from '@/components/ScreenshotModal';
+import ApplicationReviewModal from '@/components/ApplicationReviewModal';
+import RecruiterOutreachModal from '@/components/RecruiterOutreachModal';
 import { 
   CheckSquare, 
   Search, 
@@ -16,7 +21,10 @@ import {
   Eye,
   Building2,
   Calendar,
-  ThumbsUp
+  ThumbsUp,
+  Mail,
+  BookOpen,
+  ShieldCheck
 } from 'lucide-react';
 import { ApplicationRecord, ApplicationStatus } from '@/lib/types';
 
@@ -27,6 +35,8 @@ export default function TrackerPage() {
   const [portalFilter, setPortalFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedApp, setSelectedApp] = useState<ApplicationRecord | null>(null);
+  const [reviewingApp, setReviewingApp] = useState<ApplicationRecord | null>(null);
+  const [outreachApp, setOutreachApp] = useState<ApplicationRecord | null>(null);
 
   const fetchApplications = async () => {
     try {
@@ -103,7 +113,8 @@ export default function TrackerPage() {
     <div className="flex min-h-[calc(100vh-4rem)]">
       <Sidebar />
 
-      <main className="flex-1 p-6 lg:p-10 max-w-7xl mx-auto space-y-6">
+      <PageSlotReveal pageTitle="Application Tracker">
+        <main className="flex-1 p-6 lg:p-10 max-w-7xl mx-auto space-y-6">
         
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
@@ -203,8 +214,12 @@ export default function TrackerPage() {
                     </td>
                   </tr>
                 ) : (
-                  filteredApps.map((app) => (
-                    <tr key={app.id} className="hover:bg-slate-50/60 transition-colors">
+                  filteredApps.map((app, idx) => (
+                    <tr
+                      key={app.id}
+                      style={{ animationDelay: `${Math.min(idx * 45, 500)}ms` }}
+                      className="hover:bg-slate-50/60 transition-colors animate-row-cascade"
+                    >
                       
                       {/* Job Title & Company */}
                       <td className="py-4 px-4 sm:px-6">
@@ -226,9 +241,10 @@ export default function TrackerPage() {
 
                       {/* Match Score */}
                       <td className="py-4 px-4">
-                        <span className="font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
-                          {app.matchScore}%
-                        </span>
+                        <SpeedometerGauge
+                          value={app.matchScore}
+                          size="sm"
+                        />
                       </td>
 
                       {/* Status */}
@@ -267,33 +283,53 @@ export default function TrackerPage() {
                       </td>
 
                       {/* Actions */}
-                      <td className="py-4 px-4 text-right space-x-2">
-                        {app.status === 'Pending review' && (
+                      <td className="py-4 px-4 text-right">
+                        <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                          {(app.status === 'Pending review' || app.status === 'Awaiting Review') && (
+                            <button
+                              onClick={() => setReviewingApp(app)}
+                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-sm transition-all text-xs inline-flex items-center gap-1.5"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>Review & Submit</span>
+                            </button>
+                          )}
+
                           <button
-                            onClick={() => handleApprove(app.id)}
-                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-sm transition-all"
+                            type="button"
+                            onClick={() => setOutreachApp(app)}
+                            className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                            title="Draft Recruiter Note or Follow-Up"
                           >
-                            Approve & Submit
+                            <Mail className="w-4 h-4" />
                           </button>
-                        )}
 
-                        <button
-                          onClick={() => setSelectedApp(app)}
-                          className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors"
-                          title="View Full Logs & Verification"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
+                          <Link
+                            href={`/interview-prep?role=${encodeURIComponent(app.jobTitle)}&company=${encodeURIComponent(app.company)}`}
+                            className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 transition-colors inline-block"
+                            title="Practice Interview Questions for this role"
+                          >
+                            <BookOpen className="w-4 h-4" />
+                          </Link>
 
-                        <a
-                          href={app.applyUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors inline-block"
-                          title="Open original job page"
-                        >
-                          <ExternalLink className="w-4 h-4" />
-                        </a>
+                          <button
+                            onClick={() => setSelectedApp(app)}
+                            className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors"
+                            title="View Full Logs & Verification"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+
+                          <a
+                            href={app.applyUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors inline-block"
+                            title="Open original job page"
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                          </a>
+                        </div>
                       </td>
 
                     </tr>
@@ -305,6 +341,7 @@ export default function TrackerPage() {
         </div>
 
       </main>
+      </PageSlotReveal>
 
       <ScreenshotModal
         isOpen={Boolean(selectedApp)}
@@ -312,6 +349,22 @@ export default function TrackerPage() {
         onClose={() => setSelectedApp(null)}
         onApprove={handleApprove}
         onSkip={handleSkip}
+      />
+
+      <ApplicationReviewModal
+        isOpen={Boolean(reviewingApp)}
+        application={reviewingApp}
+        onClose={() => setReviewingApp(null)}
+        onApprove={handleApprove}
+        onSkip={handleSkip}
+      />
+
+      <RecruiterOutreachModal
+        isOpen={Boolean(outreachApp)}
+        onClose={() => setOutreachApp(null)}
+        jobTitle={outreachApp?.jobTitle || ''}
+        company={outreachApp?.company || ''}
+        matchScore={outreachApp?.matchScore || 85}
       />
     </div>
   );

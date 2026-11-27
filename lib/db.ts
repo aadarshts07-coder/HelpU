@@ -8,12 +8,18 @@ import {
   InAppNotification,
   DashboardMetrics,
   ResumeVersion,
-  PipelineStatus
+  PipelineStatus,
+  UserAccount,
+  VerificationToken,
+  SecurityAuditLog,
+  GoalAnalysisRecord,
+  GoalCertificationRecord
 } from './types';
 
 const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'store.json');
 let inMemoryFallback: DatabaseStore | null = null;
+let lastMtimeMs = 0;
 
 interface DatabaseStore {
   profile: UserProfile;
@@ -23,6 +29,11 @@ interface DatabaseStore {
   notifications: InAppNotification[];
   resumeVersions: ResumeVersion[];
   pipelineStatus: PipelineStatus;
+  users: UserAccount[];
+  verificationTokens: VerificationToken[];
+  auditLogs: SecurityAuditLog[];
+  goalAnalyses?: GoalAnalysisRecord[];
+  goalCertifications?: GoalCertificationRecord[];
 }
 
 const DEFAULT_PROFILE: UserProfile = {
@@ -358,34 +369,85 @@ const DEFAULT_PIPELINE_STATUS: PipelineStatus = {
 };
 
 function ensureDataStore(): DatabaseStore {
-  if (inMemoryFallback) {
-    return inMemoryFallback;
-  }
-
   try {
+    if (fs.existsSync(DB_FILE)) {
+      const stats = fs.statSync(DB_FILE);
+      if (inMemoryFallback && stats.mtimeMs <= lastMtimeMs) {
+        return inMemoryFallback;
+      }
+
+      const raw = fs.readFileSync(DB_FILE, 'utf-8');
+      const store = JSON.parse(raw);
+      let mutated = false;
+      if (!Array.isArray(store.resumeVersions)) {
+        store.resumeVersions = [];
+        mutated = true;
+      }
+      if (!store.pipelineStatus) {
+        store.pipelineStatus = DEFAULT_PIPELINE_STATUS;
+        mutated = true;
+      }
+      if (!Array.isArray(store.users)) {
+        const existingEmail = (store.profile?.email || 'alex.morgan@example.com').toLowerCase().trim();
+        const existingName = store.profile?.name || 'Alex Morgan';
+        store.users = [
+          {
+            id: store.profile?.id || 'usr_demo_101',
+            email: existingEmail,
+            name: existingName,
+            status: 'ACTIVE',
+            emailVerified: new Date().toISOString(),
+            passwordHash: 'scrypt$16384$8$1$e1f82c40c5f94a28b072da3f829db712$e58b86e00171a4f0bb4e16d0be9788e2cb6b404d0f622f6d2e6750da57f078d103b4e28400494cf0bf75da898e09f58ea969a572c67623910cbe7781b4d081f9',
+            failedLoginAttempts: 0,
+            lockedUntil: null,
+            twoFactorEnabled: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }
+        ];
+        mutated = true;
+      }
+      if (!Array.isArray(store.verificationTokens)) {
+        store.verificationTokens = [];
+        mutated = true;
+      }
+      if (!Array.isArray(store.auditLogs)) {
+        store.auditLogs = [];
+        mutated = true;
+      }
+      if (!Array.isArray(store.goalAnalyses)) {
+        store.goalAnalyses = [];
+        mutated = true;
+      }
+      if (!Array.isArray(store.goalCertifications)) {
+        store.goalCertifications = [];
+        mutated = true;
+      }
+      if (mutated) {
+        fs.writeFileSync(DB_FILE, JSON.stringify(store, null, 2), 'utf-8');
+        try {
+          lastMtimeMs = fs.statSync(DB_FILE).mtimeMs;
+        } catch {
+          lastMtimeMs = Date.now();
+        }
+      } else {
+        lastMtimeMs = stats.mtimeMs;
+      }
+      inMemoryFallback = store;
+      return store;
+    }
+
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
 
-    if (!fs.existsSync(DB_FILE)) {
-      // Check if project root data/store.json exists to copy from
-      const seedFile = path.join(process.cwd(), 'data', 'store.json');
-      let initialData: DatabaseStore;
-      if (fs.existsSync(seedFile) && seedFile !== DB_FILE) {
-        try {
-          initialData = JSON.parse(fs.readFileSync(seedFile, 'utf-8'));
-        } catch {
-          initialData = {
-            profile: DEFAULT_PROFILE,
-            jobs: INITIAL_JOBS,
-            applications: INITIAL_APPLICATIONS,
-            settings: DEFAULT_SETTINGS,
-            notifications: INITIAL_NOTIFICATIONS,
-            resumeVersions: [],
-            pipelineStatus: DEFAULT_PIPELINE_STATUS,
-          };
-        }
-      } else {
+    // Check if project root data/store.json exists to copy from
+    const seedFile = path.join(process.cwd(), 'data', 'store.json');
+    let initialData: DatabaseStore;
+    if (fs.existsSync(seedFile) && seedFile !== DB_FILE) {
+      try {
+        initialData = JSON.parse(fs.readFileSync(seedFile, 'utf-8'));
+      } catch {
         initialData = {
           profile: DEFAULT_PROFILE,
           jobs: INITIAL_JOBS,
@@ -394,29 +456,33 @@ function ensureDataStore(): DatabaseStore {
           notifications: INITIAL_NOTIFICATIONS,
           resumeVersions: [],
           pipelineStatus: DEFAULT_PIPELINE_STATUS,
+          users: [],
+          verificationTokens: [],
+          auditLogs: [],
         };
       }
-      fs.writeFileSync(DB_FILE, JSON.stringify(initialData, null, 2), 'utf-8');
-      inMemoryFallback = initialData;
-      return initialData;
+    } else {
+      initialData = {
+        profile: DEFAULT_PROFILE,
+        jobs: INITIAL_JOBS,
+        applications: INITIAL_APPLICATIONS,
+        settings: DEFAULT_SETTINGS,
+        notifications: INITIAL_NOTIFICATIONS,
+        resumeVersions: [],
+        pipelineStatus: DEFAULT_PIPELINE_STATUS,
+        users: [],
+        verificationTokens: [],
+        auditLogs: [],
+      };
     }
-
-    const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    const store = JSON.parse(raw);
-    let mutated = false;
-    if (!Array.isArray(store.resumeVersions)) {
-      store.resumeVersions = [];
-      mutated = true;
+    fs.writeFileSync(DB_FILE, JSON.stringify(initialData, null, 2), 'utf-8');
+    try {
+      lastMtimeMs = fs.statSync(DB_FILE).mtimeMs;
+    } catch {
+      lastMtimeMs = Date.now();
     }
-    if (!store.pipelineStatus) {
-      store.pipelineStatus = DEFAULT_PIPELINE_STATUS;
-      mutated = true;
-    }
-    if (mutated) {
-      fs.writeFileSync(DB_FILE, JSON.stringify(store, null, 2), 'utf-8');
-    }
-    inMemoryFallback = store;
-    return store;
+    inMemoryFallback = initialData;
+    return initialData;
   } catch (err) {
     console.warn('[DB Engine] Disk store access limited or read-only, using memory store:', err);
     if (!inMemoryFallback) {
@@ -428,6 +494,9 @@ function ensureDataStore(): DatabaseStore {
         notifications: INITIAL_NOTIFICATIONS,
         resumeVersions: [],
         pipelineStatus: DEFAULT_PIPELINE_STATUS,
+        users: [],
+        verificationTokens: [],
+        auditLogs: [],
       };
     }
     return inMemoryFallback;
@@ -441,6 +510,11 @@ function writeDataStore(store: DatabaseStore) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(store, null, 2), 'utf-8');
+    try {
+      lastMtimeMs = fs.statSync(DB_FILE).mtimeMs;
+    } catch {
+      lastMtimeMs = Date.now();
+    }
   } catch (err) {
     console.warn('[DB Engine] Could not persist to disk (serverless/read-only mode active):', err);
   }
@@ -658,5 +732,222 @@ export const db = {
     }
     // Reinitialize empty
     ensureDataStore();
+  },
+
+  // --- Security & User Account Methods ---
+  getUserByEmail: async (email: string): Promise<UserAccount | null> => {
+    const store = ensureDataStore();
+    const normalized = (email || '').toLowerCase().trim();
+    const user = (store.users || []).find((u) => u.email.toLowerCase().trim() === normalized);
+    return user || null;
+  },
+
+  getUserById: async (id: string): Promise<UserAccount | null> => {
+    const store = ensureDataStore();
+    const user = (store.users || []).find((u) => u.id === id);
+    return user || null;
+  },
+
+  createUser: async (userData: Omit<UserAccount, 'id' | 'createdAt' | 'updatedAt'>): Promise<UserAccount> => {
+    const store = ensureDataStore();
+    if (!store.users) store.users = [];
+    const now = new Date().toISOString();
+    const newUser: UserAccount = {
+      ...userData,
+      id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.users.push(newUser);
+    writeDataStore(store);
+    return newUser;
+  },
+
+  updateUser: async (id: string, updates: Partial<UserAccount>): Promise<UserAccount | null> => {
+    const store = ensureDataStore();
+    if (!store.users) store.users = [];
+    const idx = store.users.findIndex((u) => u.id === id);
+    if (idx === -1) return null;
+    const updated: UserAccount = {
+      ...store.users[idx],
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
+    store.users[idx] = updated;
+    writeDataStore(store);
+    return updated;
+  },
+
+  createVerificationToken: async (tokenData: Omit<VerificationToken, 'id' | 'createdAt'>): Promise<VerificationToken> => {
+    const store = ensureDataStore();
+    if (!store.verificationTokens) store.verificationTokens = [];
+    // Invalidate prior unused tokens of the same type for this user
+    store.verificationTokens = store.verificationTokens.map((t) => {
+      if (t.userId === tokenData.userId && t.type === tokenData.type && !t.usedAt) {
+        return { ...t, usedAt: new Date().toISOString() };
+      }
+      return t;
+    });
+
+    const newToken: VerificationToken = {
+      ...tokenData,
+      id: `tok_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      createdAt: new Date().toISOString(),
+    };
+    store.verificationTokens.push(newToken);
+    writeDataStore(store);
+    return newToken;
+  },
+
+  findVerificationToken: async (tokenHash: string, type: VerificationToken['type']): Promise<VerificationToken | null> => {
+    const store = ensureDataStore();
+    const now = new Date().toISOString();
+    const token = (store.verificationTokens || []).find(
+      (t) => t.tokenHash === tokenHash && t.type === type && !t.usedAt && t.expiresAt > now
+    );
+    return token || null;
+  },
+
+  findOtpToken: async (email: string, otpHash: string, type: VerificationToken['type']): Promise<VerificationToken | null> => {
+    const store = ensureDataStore();
+    const now = new Date().toISOString();
+    const normalized = (email || '').toLowerCase().trim();
+    const token = (store.verificationTokens || []).find(
+      (t) => t.email.toLowerCase().trim() === normalized && t.otpHash === otpHash && t.type === type && !t.usedAt && t.expiresAt > now
+    );
+    return token || null;
+  },
+
+  consumeToken: async (id: string): Promise<void> => {
+    const store = ensureDataStore();
+    if (!store.verificationTokens) return;
+    const token = store.verificationTokens.find((t) => t.id === id);
+    if (token) {
+      token.usedAt = new Date().toISOString();
+      writeDataStore(store);
+    }
+  },
+
+  invalidateUserTokens: async (userId: string, type?: VerificationToken['type']): Promise<void> => {
+    const store = ensureDataStore();
+    if (!store.verificationTokens) return;
+    const now = new Date().toISOString();
+    store.verificationTokens = store.verificationTokens.map((t) => {
+      if (t.userId === userId && (!type || t.type === type) && !t.usedAt) {
+        return { ...t, usedAt: now };
+      }
+      return t;
+    });
+    writeDataStore(store);
+  },
+
+  recordAuditLog: async (logData: Omit<SecurityAuditLog, 'id' | 'createdAt'>): Promise<void> => {
+    const store = ensureDataStore();
+    if (!store.auditLogs) store.auditLogs = [];
+    const newLog: SecurityAuditLog = {
+      ...logData,
+      id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      createdAt: new Date().toISOString(),
+    };
+    store.auditLogs.push(newLog);
+    // Keep max 500 audit log entries in storage
+    if (store.auditLogs.length > 500) {
+      store.auditLogs = store.auditLogs.slice(-500);
+    }
+    writeDataStore(store);
+  },
+
+  getAuditLogs: async (userId?: string): Promise<SecurityAuditLog[]> => {
+    const store = ensureDataStore();
+    if (!userId) return store.auditLogs || [];
+    return (store.auditLogs || []).filter((l) => l.userId === userId);
+  },
+
+  getLatestGoalAnalysis: async (userId: string): Promise<GoalAnalysisRecord | null> => {
+    const store = ensureDataStore();
+    const list = store.goalAnalyses || [];
+    const userRecords = list.filter((r) => r.user_id === userId || !userId);
+    if (userRecords.length === 0) return null;
+    // Sort descending by created_at
+    userRecords.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    return userRecords[0];
+  },
+
+  saveGoalAnalysis: async (record: GoalAnalysisRecord): Promise<void> => {
+    const store = ensureDataStore();
+    if (!store.goalAnalyses) store.goalAnalyses = [];
+    const existingIdx = store.goalAnalyses.findIndex((r) => r.id === record.id);
+    if (existingIdx >= 0) {
+      store.goalAnalyses[existingIdx] = record;
+    } else {
+      store.goalAnalyses.unshift(record);
+    }
+    // Keep max 50 goal analyses in local store
+    if (store.goalAnalyses.length > 50) {
+      store.goalAnalyses = store.goalAnalyses.slice(0, 50);
+    }
+    writeDataStore(store);
+  },
+
+  updateGoalCompletedSteps: async (id: string, completedSteps: string[]): Promise<boolean> => {
+    const store = ensureDataStore();
+    if (!store.goalAnalyses) return false;
+    const item = store.goalAnalyses.find((r) => r.id === id);
+    if (item) {
+      item.completed_steps = completedSteps;
+      writeDataStore(store);
+      return true;
+    }
+    return false;
+  },
+
+  getGoalCertifications: async (userId: string, analysisId?: string): Promise<GoalCertificationRecord[]> => {
+    const store = ensureDataStore();
+    const list = store.goalCertifications || [];
+    return list.filter((r) => (r.user_id === userId || !userId) && (!analysisId || r.analysis_id === analysisId));
+  },
+
+  upsertGoalCertification: async (record: GoalCertificationRecord): Promise<void> => {
+    const store = ensureDataStore();
+    if (!store.goalCertifications) store.goalCertifications = [];
+    const idx = store.goalCertifications.findIndex(
+      (c) => c.user_id === record.user_id && c.cert_key === record.cert_key && c.analysis_id === record.analysis_id
+    );
+    if (idx >= 0) {
+      store.goalCertifications[idx] = {
+        ...store.goalCertifications[idx],
+        ...record,
+        updated_at: new Date().toISOString(),
+      };
+    } else {
+      store.goalCertifications.push(record);
+    }
+    writeDataStore(store);
+  },
+
+  addCertificationToProfile: async (
+    userId: string,
+    cert: { name: string; issuer: string; issueDate: string; url?: string }
+  ): Promise<void> => {
+    const store = ensureDataStore();
+    if (!store.profile) return;
+    if (!store.profile.certifications) store.profile.certifications = [];
+
+    // Check if certification with same name already exists
+    const exists = store.profile.certifications.some(
+      (c) => c.name.toLowerCase().trim() === cert.name.toLowerCase().trim()
+    );
+    if (!exists) {
+      const newCertItem = {
+        id: `cert_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        name: cert.name,
+        issuer: cert.issuer,
+        issueDate: cert.issueDate,
+        url: cert.url || '',
+      };
+      store.profile.certifications.unshift(newCertItem);
+      store.profile.updatedAt = new Date().toISOString();
+      writeDataStore(store);
+    }
   },
 };

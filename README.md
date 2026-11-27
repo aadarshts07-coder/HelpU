@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # 🤖 HELP U — Autonomous AI Job Application & Resume Agent
 
 > **HELP U** is an autonomous, end-to-end full-stack web application that takes candidate profile details, builds an ATS-optimized resume using Claude 3.5 Sonnet, searches major job portals (LinkedIn, Indeed, Naukri, Greenhouse, Lever), scores compatibility (0–100), applies automatically using Playwright with stealth controls, and tracks progress with full audit screenshots and multi-channel notifications.
@@ -96,6 +95,15 @@ helpu/
 ├── .env.example                # Example environment variables
 └── README.md
 ```
+
+---
+
+## 🌐 Production Deployment
+
+- **Render Deployment Guide**: See [RENDER_DEPLOY.md](file:///c:/Users/aadar/OneDrive/Desktop/project%201/RENDER_DEPLOY.md) for 1-click Render blueprint (`render.yaml`), PostgreSQL database setup, and environment variables.
+- **Docker Compose**: Production multi-container stack with Caddy automated SSL is configured in `docker-compose.yml`.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
 
 ---
 
@@ -208,7 +216,3 @@ HELP U incorporates live tech job search powered by **[FreeHire](https://freehir
 
 ## 📄 License
 MIT License. Built with ❤️ by HELP U.
-=======
-# HelpU
-auto resume and auto job search platform
->>>>>>> 6615fdf688e1363430050af810c927fe076cdf23

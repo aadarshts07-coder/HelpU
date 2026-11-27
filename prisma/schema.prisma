@@ -27,6 +27,14 @@ model User {
   salaryMax            Int?
   salaryCurrency       String          @default("USD")
   industries           String[]
+  status               String          @default("UNVERIFIED") // UNVERIFIED, ACTIVE, SUSPENDED
+  emailVerified        DateTime?
+  passwordHash         String?
+  failedLoginAttempts  Int             @default(0)
+  lockedUntil          DateTime?
+  twoFactorEnabled     Boolean         @default(false)
+  twoFactorSecret      String?
+  backupCodes          String[]
   createdAt            DateTime        @default(now())
   updatedAt            DateTime        @updatedAt
 
@@ -173,3 +181,144 @@ model Notification {
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
+
+model VerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  email     String
+  tokenHash String    @unique
+  otpHash   String?
+  type      String    // EMAIL_VERIFICATION, PASSWORD_RESET, MAGIC_LINK
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([tokenHash, type])
+  @@index([email, type])
+}
+
+model SecurityAuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  email     String
+  event     String   // LOGIN_SUCCESS, LOGIN_FAILURE, EMAIL_VERIFIED, etc.
+  ipAddress String
+  userAgent String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([email])
+}
+
+// Global Ingested & Normalized Job Pool
+model Job {
+  id                  String      @id @default(uuid())
+  title               String
+  company             String
+  companySlug         String
+  description         String      @db.Text
+  countryCode         String      // 2-letter lowercase ISO (e.g. "in", "us")
+  stateCode           String?     // lowercase state code (e.g. "tn", "ca")
+  city                String      // Capitalized city name (e.g. "Madurai")
+  canonicalLocationId String      // Composite ID (e.g. "in-tn-madurai")
+  latitude            Float?
+  longitude           Float?
+  workMode            String      @default("onsite") // onsite, hybrid, remote
+  employmentType      String      @default("job")    // job, internship, contract
+  experienceLevel     String      @default("Mid")    // Intern, Entry, Mid, Senior
+  salaryMin           Int?
+  salaryMax           Int?
+  salaryCurrency      String?     @default("INR")
+  salaryFormatted     String?     // e.g. "₹6,00,000 - ₹10,00,000 / yr"
+  source              String      // Greenhouse, Lever, SmartRecruiters, Adzuna, Direct, etc.
+  sourceJobId         String?
+  applyUrl            String      @db.Text
+  additionalApplyUrls Json?       // [{ source: "SmartRecruiters", url: "..." }]
+  fingerprint         String      @unique // SHA256(normTitle + normCompany + canonicalLoc)
+  qualityScore        Int         @default(80) // 0 - 100
+  isVerified          Boolean     @default(true)
+  isExpired           Boolean     @default(false)
+  postedAt            DateTime    @default(now())
+  expiresAt           DateTime?
+  lastVerifiedAt      DateTime    @default(now())
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  reports             JobReport[]
+
+  @@index([countryCode, stateCode, city])
+  @@index([canonicalLocationId])
+  @@index([workMode])
+  @@index([isExpired])
+  @@index([postedAt])
+}
+
+// Curated Company & ATS Registry
+model CompanyRegistry {
+  id            String    @id @default(uuid())
+  name          String
+  domain        String    @unique
+  countryCode   String
+  stateCode     String?
+  cities        String[]  // Cities with active operations (e.g. ["Madurai", "Chennai"])
+  atsVendor     String    // greenhouse, lever, ashby, smartrecruiters, workable, direct
+  atsIdentifier String    // Board slug or identifier
+  careersUrl    String
+  active        Boolean   @default(true)
+  lastCrawledAt DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([countryCode])
+  @@index([atsVendor])
+}
+
+// Demand-Driven Coverage Gap Tracker (Zero-Result Search Logger)
+model ZeroResultSearch {
+  id           String    @id @default(uuid())
+  query        String    // e.g. "Network Engineer"
+  locationRaw  String    // e.g. "Madurai, Tamil Nadu, India"
+  countryCode  String?
+  stateCode    String?
+  city         String?
+  searchCount  Int       @default(1)
+  isBackfilled Boolean   @default(false)
+  lastSearched DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+
+  @@index([city, query])
+  @@index([isBackfilled])
+}
+
+// Candidate Alert Subscriptions
+model JobAlert {
+  id          String    @id @default(uuid())
+  email       String
+  query       String
+  location    String
+  countryCode String?
+  stateCode   String?
+  city        String?
+  frequency   String    @default("daily") // instant, daily, weekly
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  @@index([email])
+  @@index([city])
+}
+
+// Candidate Job Reports & Moderation
+model JobReport {
+  id        String   @id @default(uuid())
+  jobId     String
+  reason    String   // scam, expired, misleading, fee_requested, broken_link
+  details   String?  @db.Text
+  email     String?
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([resolved])
+}
+

@@ -1,0 +1,63 @@
+# ========================================================
+# Render Blueprint Specification for HELP U
+# Documentation: https://render.com/docs/blueprint-spec
+# ========================================================
+
+services:
+  # 1. HELP U Full-Stack Web Application (Next.js 14)
+  - type: web
+    name: help-u-web
+    runtime: node
+    plan: free # Switch to 'starter' ($7/mo) for 24/7 always-on without spin-downs
+    region: oregon # Choose: oregon, frankfurt, ohio, singapore
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_APP_URL
+        fromService:
+          type: web
+          name: help-u-web
+          property: host
+      - key: NEXTAUTH_URL
+        fromService:
+          type: web
+          name: help-u-web
+          property: host
+      - key: DATABASE_URL
+        fromDatabase:
+          name: help-u-db
+          property: connectionString
+      - key: CREDENTIAL_ENCRYPTION_KEY
+        generateValue: true # Generates a unique 32-character encryption key automatically
+      - key: CREDENTIAL_SALT
+        generateValue: true # Generates a random cryptographic salt automatically
+      - key: NEXTAUTH_SECRET
+        generateValue: true # Generates a secure session JWT secret automatically
+      - key: NEXT_PUBLIC_DEMO_EMAIL
+        value: alex.morgan@example.com
+      - key: NEXT_PUBLIC_DEMO_PASSWORD
+        value: password123
+      - key: DEFAULT_DAILY_APPLICATION_LIMIT
+        value: "20"
+      - key: DEFAULT_MATCH_THRESHOLD
+        value: "70"
+      - key: DEFAULT_REVIEW_MODE
+        value: ask_before_submitting
+      # Optional API Keys - Set in the Render Dashboard under Environment tab
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: FREEHIRE_API_KEY
+        sync: false
+      - key: FREEHIRE_COMMERCIAL_MODE
+        value: "false"
+
+databases:
+  # 2. Managed PostgreSQL Database
+  - name: help-u-db
+    databaseName: helpu
+    user: helpu
+    plan: free # Free tier includes 1GB storage (expires in 30 days; upgrade to Starter for permanent persistence)
+    region: oregon

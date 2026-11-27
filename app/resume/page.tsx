@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
+import PageSlotReveal from '@/components/PageSlotReveal';
 import ATSResumePreview from '@/components/ATSResumePreview';
 import { ATSResumeContent } from '@/lib/ai';
 import { 
@@ -14,7 +15,8 @@ import {
   Building2, 
   Briefcase,
   RefreshCw,
-  Sliders
+  Sliders,
+  Target
 } from 'lucide-react';
 import { UserProfile, ResumeVersion } from '@/lib/types';
 
@@ -36,6 +38,16 @@ export default function ResumePage() {
   const [generatedLetter, setGeneratedLetter] = useState('');
   const [generatingLetter, setGeneratingLetter] = useState(false);
   const [copiedLetter, setCopiedLetter] = useState(false);
+  const [goalGaps, setGoalGaps] = useState<any[] | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('help_u_goal_gaps');
+        if (raw) setGoalGaps(JSON.parse(raw));
+      } catch {}
+    }
+  }, []);
 
   const fetchProfileAndGenerate = async () => {
     try {
@@ -131,7 +143,8 @@ export default function ResumePage() {
     <div className="flex min-h-[calc(100vh-4rem)]">
       <Sidebar />
 
-      <main className="flex-1 p-6 lg:p-10 max-w-6xl mx-auto space-y-6">
+      <PageSlotReveal pageTitle="AI Resume and Cover Letter">
+        <main className="flex-1 p-6 lg:p-10 max-w-6xl mx-auto space-y-6">
         
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
@@ -172,6 +185,32 @@ export default function ResumePage() {
             </button>
           </div>
         </div>
+
+        {/* Goal to Achieve Gaps Banner if preloaded */}
+        {goalGaps && goalGaps.length > 0 && (
+          <div className="p-4 rounded-2xl bg-indigo-50/80 border border-indigo-200 flex items-start justify-between gap-3 animate-in fade-in">
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-900">
+                <Target className="w-4 h-4 text-indigo-600" />
+                <span>Preloaded Target Gaps from Goal to Achieve</span>
+              </div>
+              <p className="text-[11px] text-indigo-700 leading-relaxed font-medium">
+                High-priority focus areas to address in your resume: {goalGaps.map((g) => g.title).join(' • ')}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setGoalGaps(null);
+                if (typeof window !== 'undefined') localStorage.removeItem('help_u_goal_gaps');
+              }}
+              className="text-xs font-semibold text-indigo-400 hover:text-indigo-800 p-1"
+              title="Dismiss banner"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* TAB 1: ATS Resume Preview & Live Editor */}
         {activeTab === 'resume' && (
@@ -339,6 +378,7 @@ export default function ResumePage() {
         )}
 
       </main>
+      </PageSlotReveal>
     </div>
   );
 }

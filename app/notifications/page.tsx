@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
+import PageSlotReveal from '@/components/PageSlotReveal';
 import { 
   Bell, 
   CheckCircle2, 
@@ -65,7 +66,8 @@ export default function NotificationsPage() {
     <div className="flex min-h-[calc(100vh-4rem)]">
       <Sidebar />
 
-      <main className="flex-1 p-6 lg:p-10 max-w-4xl mx-auto space-y-6">
+      <PageSlotReveal pageTitle="In-App Notifications & Alerts">
+        <main className="flex-1 p-6 lg:p-10 max-w-4xl mx-auto space-y-6">
         
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
@@ -95,10 +97,11 @@ export default function NotificationsPage() {
               No notifications yet. New application alerts will appear here.
             </div>
           ) : (
-            notifications.map((n) => (
+            notifications.map((n, idx) => (
               <div
                 key={n.id}
-                className={`p-4 sm:p-5 rounded-2xl border transition-all ${
+                style={{ animationDelay: `${idx * 60}ms` }}
+                className={`p-4 sm:p-5 rounded-2xl border transition-all animate-row-cascade ${
                   !n.read
                     ? 'bg-indigo-50/40 border-indigo-200 shadow-sm'
                     : 'bg-white border-slate-200'
@@ -117,7 +120,7 @@ export default function NotificationsPage() {
                       <div className="flex items-center gap-2">
                         <h2 className="text-sm font-bold text-slate-900">{n.title}</h2>
                         {!n.read && (
-                          <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
+                          <span className="w-2 h-2 rounded-full bg-indigo-600 animate-pulse"></span>
                         )}
                       </div>
                       <p className="text-xs text-slate-600 mt-1 leading-relaxed">{n.message}</p>
@@ -157,6 +160,7 @@ export default function NotificationsPage() {
         </div>
 
       </main>
+      </PageSlotReveal>
     </div>
   );
 }

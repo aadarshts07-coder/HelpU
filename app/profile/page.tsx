@@ -3,24 +3,29 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
-import { 
-  User, 
-  MapPin, 
-  Mail, 
-  Phone, 
-  Linkedin, 
-  Github, 
-  Globe, 
-  Briefcase, 
-  GraduationCap, 
-  Code, 
-  FolderGit2, 
-  Award, 
-  Languages, 
-  Plus, 
-  Trash2, 
-  Save, 
-  ArrowRight, 
+import PageSlotReveal from '@/components/PageSlotReveal';
+import StepTabs, { StepItem } from '@/components/StepTabs';
+import ProfileCompletenessRing from '@/components/ProfileCompletenessRing';
+import AnimatedNumber from '@/components/AnimatedNumber';
+import ConfettiCelebration from '@/components/ConfettiCelebration';
+import {
+  User,
+  MapPin,
+  Mail,
+  Phone,
+  Linkedin,
+  Github,
+  Globe,
+  Briefcase,
+  GraduationCap,
+  Code,
+  FolderGit2,
+  Award,
+  Languages,
+  Plus,
+  Trash2,
+  Save,
+  ArrowRight,
   ArrowLeft,
   CheckCircle2,
   AlertCircle,
@@ -30,15 +35,15 @@ import {
   ExternalLink,
   X
 } from 'lucide-react';
-import { 
-  UserProfile, 
-  ExperienceItem, 
-  EducationItem, 
-  SkillItem, 
-  ProjectItem, 
-  CertificationItem, 
+import {
+  UserProfile,
+  ExperienceItem,
+  EducationItem,
+  SkillItem,
+  ProjectItem,
+  CertificationItem,
   LanguageItem,
-  PipelineStatus 
+  PipelineStatus
 } from '@/lib/types';
 
 const STEPS = [
@@ -49,6 +54,33 @@ const STEPS = [
   { id: 5, title: 'Skills & Certs', icon: Code },
   { id: 6, title: 'Projects & Langs', icon: Languages },
 ];
+
+const STEP_BANNERS: { [step: number]: { headline: string; tip: string } } = {
+  1: {
+    headline: "Let's establish your verified identity & contact channels.",
+    tip: "Recruiters and ATS algorithms parse your email and location first.",
+  },
+  2: {
+    headline: "Great start! Now tell us which roles and locations you're targeting.",
+    tip: "Our background crawler monitors 20+ boards matching these exact titles.",
+  },
+  3: {
+    headline: "Your experience is what ATS algorithms love most.",
+    tip: "Bullet points with numbers & quantifiable impact generate 3x more interview callbacks.",
+  },
+  4: {
+    headline: "Academic credentials showcase your foundational expertise.",
+    tip: "Degrees, institutions, and relevant coursework strengthen automated scoring.",
+  },
+  5: {
+    headline: "Skills & certifications are the primary keywords hiring filters search for.",
+    tip: "Aim for a healthy blend of technical, framework, and tooling proficiencies.",
+  },
+  6: {
+    headline: "Last step. You're almost ready to launch your autonomous search!",
+    tip: "Projects and languages distinguish senior candidates from the crowd.",
+  },
+};
 
 export default function ProfileBuilderPage() {
   const router = useRouter();
@@ -77,6 +109,96 @@ export default function ProfileBuilderPage() {
   const [newLangName, setNewLangName] = useState('');
   const [newLangProficiency, setNewLangProficiency] = useState<LanguageItem['proficiency']>('Fluent');
 
+  // Motion & Micro-interaction States
+  const [stepDirection, setStepDirection] = useState<'forward' | 'backward' | 'jump'>('forward');
+  const [shakingFields, setShakingFields] = useState<{ [field: string]: boolean }>({});
+  const [warnStepId, setWarnStepId] = useState<number | null>(null);
+  const [pageMounted, setPageMounted] = useState<boolean>(false);
+  const [showAiTip, setShowAiTip] = useState<boolean>(true);
+  const [saveSuccessMorph, setSaveSuccessMorph] = useState<boolean>(false);
+  const [showCompletionModal, setShowCompletionModal] = useState<boolean>(false);
+  const [showConfetti, setShowConfetti] = useState<boolean>(false);
+  const [stepIntroBanner, setStepIntroBanner] = useState<{ headline: string; tip: string } | null>(STEP_BANNERS[1]);
+  const [srAnnouncement, setSrAnnouncement] = useState<string>('Step 1: Contact & Info');
+  const formCardRef = useRef<HTMLDivElement>(null);
+
+  // Trigger temporary error shake on field blur or submit
+  const triggerFieldShake = (fieldName: string) => {
+    setShakingFields((prev) => ({ ...prev, [fieldName]: true }));
+    setTimeout(() => {
+      setShakingFields((prev) => ({ ...prev, [fieldName]: false }));
+    }, 350);
+  };
+
+  // Direction-aware step switching
+  const handleStepSelect = (newStep: number) => {
+    if (newStep === currentStep) return;
+
+    // Guard: Prevent skipping forward past required fields
+    if (newStep > currentStep) {
+      if (currentStep === 1 && (!profile?.name?.trim() || !profile?.email?.trim())) {
+        setWarnStepId(1);
+        triggerFieldShake('name');
+        triggerFieldShake('email');
+        showToast('error', 'Please fill in your Name and Email before proceeding.');
+        setTimeout(() => setWarnStepId(null), 1200);
+        return;
+      } else if (currentStep === 2 && (!profile?.targetJobTitles || profile.targetJobTitles.length === 0)) {
+        setWarnStepId(2);
+        showToast('error', 'Please add at least one Target Job Title before proceeding.');
+        setTimeout(() => setWarnStepId(null), 1200);
+        return;
+      }
+    }
+
+    if (Math.abs(newStep - currentStep) > 1) {
+      setStepDirection('jump');
+    } else {
+      setStepDirection(newStep > currentStep ? 'forward' : 'backward');
+    }
+
+    setCurrentStep(newStep);
+    setStepIntroBanner(STEP_BANNERS[newStep] || null);
+    setSrAnnouncement(`Step ${newStep} of 6: ${STEPS[newStep - 1]?.title}`);
+
+    // Update URL history query parameter (?step=X)
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('step', newStep.toString());
+      window.history.pushState(null, '', url.toString());
+    }
+
+    // Smooth scroll to top of form card if needed
+    if (formCardRef.current) {
+      const top = formCardRef.current.getBoundingClientRect().top + window.scrollY - 90;
+      window.scrollTo({ top, behavior: 'smooth' });
+    }
+  };
+
+  // Load URL ?step= on initial mount & listen to browser Back/Forward (popstate)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const stepParam = parseInt(params.get('step') || '1', 10);
+      if (stepParam >= 1 && stepParam <= 6) {
+        setCurrentStep(stepParam);
+        setStepIntroBanner(STEP_BANNERS[stepParam] || null);
+      }
+    }
+
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const stepParam = parseInt(params.get('step') || '1', 10);
+      if (stepParam >= 1 && stepParam <= 6) {
+        setCurrentStep(stepParam);
+        setStepIntroBanner(STEP_BANNERS[stepParam] || null);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   // Load profile from database on initial mount
   const fetchProfile = useCallback(async () => {
     try {
@@ -92,6 +214,7 @@ export default function ProfileBuilderPage() {
       showToast('error', 'Could not load your saved profile: ' + (err.message || 'Network error'));
     } finally {
       setLoading(false);
+      setTimeout(() => setPageMounted(true), 50);
     }
   }, []);
 
@@ -200,6 +323,10 @@ export default function ProfileBuilderPage() {
 
     if (!validateProfile()) {
       showToast('error', 'Please resolve the highlighted validation errors before saving.');
+      if (formCardRef.current) {
+        formCardRef.current.classList.add('animate-field-shake');
+        setTimeout(() => formCardRef.current?.classList.remove('animate-field-shake'), 400);
+      }
       return;
     }
 
@@ -219,17 +346,27 @@ export default function ProfileBuilderPage() {
       setProfile(data.profile);
       setIsDirty(false);
       setErrors({});
-      showToast('success', 'Profile saved! Background pipeline triggered for resume, jobs & auto-apply.');
       fetchPipelineStatus();
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('profileUpdated'));
       }
 
-      if (next && currentStep < 6) {
-        setCurrentStep(currentStep + 1);
-      } else if (next && currentStep === 6) {
-        router.push('/resume');
-      }
+      // Morph button to green checkmark for 400ms without layout jump
+      setSaveSuccessMorph(true);
+      setTimeout(() => {
+        setSaveSuccessMorph(false);
+
+        if (next && currentStep < 6) {
+          handleStepSelect(currentStep + 1);
+          showToast('success', 'Progress saved! Advancing to the next step.');
+        } else if (next && currentStep === 6) {
+          showToast('success', 'Profile fully completed and ATS verified!');
+          setShowConfetti(true);
+          setShowCompletionModal(true);
+        } else {
+          showToast('success', 'Profile changes saved successfully!');
+        }
+      }, 400);
     } catch (e: any) {
       console.error('Save error:', e);
       showToast('error', e.message || 'Network error saving profile');
@@ -290,1314 +427,1572 @@ export default function ProfileBuilderPage() {
         </div>
       )}
 
-      <main className="flex-1 p-6 lg:p-10 max-w-5xl mx-auto space-y-6">
-        
-        {/* Top Header & Save Actions */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-                Profile Builder
-              </h1>
-              {isDirty && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200 animate-pulse">
-                  Unsaved Changes
-                </span>
-              )}
-            </div>
-            <p className="text-xs sm:text-sm text-slate-500 mt-1">
-              Every detail is strictly used by Claude to generate ATS-optimized resumes and fill job applications without hallucinating.
-            </p>
-          </div>
+      <PageSlotReveal pageTitle="Profile Builder">
+        <main className="flex-1 p-6 lg:p-10 max-w-5xl mx-auto space-y-6">
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => saveProfile(false)}
-              disabled={saving}
-              className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-white font-bold text-xs shadow-md transition-all self-start sm:self-auto disabled:opacity-50 ${
-                isDirty ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' : 'bg-slate-900 hover:bg-slate-800'
-              }`}
-            >
-              {saving ? (
-                <>
-                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Saving Changes...</span>
-                </>
-              ) : (
-                <>
-                  <Save className="w-4 h-4" />
-                  <span>Save Changes</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Live Pipeline Telemetry Banner */}
-        {pipelineStatus && (
-          <div className={`p-4 rounded-2xl border transition-all ${
-            pipelineStatus.isRunning
-              ? 'bg-indigo-50/70 border-indigo-200'
-              : pipelineStatus.currentStep === 'error'
-              ? 'bg-red-50 border-red-200'
-              : pipelineStatus.currentStep === 'paused'
-              ? 'bg-amber-50 border-amber-200'
-              : 'bg-slate-50 border-slate-200'
-          }`}>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          {/* Top Header & Save Actions */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 animate-in fade-in slide-in-from-top-3 duration-400">
+            <div>
               <div className="flex items-center gap-3">
-                <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
-                  pipelineStatus.isRunning 
-                    ? 'bg-indigo-600 text-white animate-spin' 
-                    : pipelineStatus.currentStep === 'paused'
-                    ? 'bg-amber-600 text-white'
-                    : 'bg-emerald-600 text-white'
-                }`}>
-                  <Sparkles className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                      Background Pipeline
-                    </span>
-                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
-                      pipelineStatus.isRunning 
-                        ? 'bg-indigo-100 text-indigo-700 animate-pulse'
-                        : pipelineStatus.currentStep === 'paused'
-                        ? 'bg-amber-100 text-amber-800'
-                        : 'bg-emerald-100 text-emerald-800'
-                    }`}>
-                      {pipelineStatus.currentStep.toUpperCase().replace('_', ' ')}
-                    </span>
-                    {pipelineStatus.resumeVersionLabel && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-800">
-                        {pipelineStatus.resumeVersionLabel}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-600 mt-0.5">{pipelineStatus.message}</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleManualPipelineTrigger}
-                  disabled={isTriggeringPipeline || pipelineStatus.isRunning}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 shadow-sm disabled:opacity-50"
-                  title="Run pipeline now"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isTriggeringPipeline ? 'animate-spin' : ''}`} />
-                  <span>Run Pipeline Now</span>
-                </button>
-              </div>
-            </div>
-
-            {pipelineStatus.isRunning && (
-              <div className="mt-3 w-full bg-indigo-100 rounded-full h-1.5 overflow-hidden">
-                <div 
-                  className="bg-indigo-600 h-1.5 rounded-full transition-all duration-500 ease-out" 
-                  style={{ width: `${Math.max(5, pipelineStatus.stepProgress)}%` }}
-                />
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Step Indicator Progress Tabs */}
-        <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-            {STEPS.map((s) => {
-              const Icon = s.icon;
-              const isCurrent = currentStep === s.id;
-              const isCompleted = currentStep > s.id;
-              const hasTabError = 
-                (s.id === 1 && (errors.name || errors.email)) ||
-                (s.id === 2 && errors.targetJobTitles);
-
-              return (
-                <button
-                  key={s.id}
-                  onClick={() => setCurrentStep(s.id)}
-                  className={`flex flex-col items-center gap-1.5 p-2 rounded-xl text-center transition-all relative ${
-                    isCurrent
-                      ? 'bg-indigo-50 border border-indigo-200 text-indigo-700 font-extrabold shadow-sm'
-                      : hasTabError
-                      ? 'bg-red-50 border border-red-200 text-red-700 font-bold'
-                      : isCompleted
-                      ? 'text-emerald-700 hover:bg-slate-50 font-semibold'
-                      : 'text-slate-400 hover:bg-slate-50 font-medium'
-                  }`}
-                >
-                  {hasTabError && (
-                    <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500 animate-ping" />
-                  )}
-                  <div
-                    className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs ${
-                      isCurrent
-                        ? 'bg-indigo-600 text-white'
-                        : hasTabError
-                        ? 'bg-red-600 text-white'
-                        : isCompleted
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : 'bg-slate-100 text-slate-400'
-                    }`}
-                  >
-                    {isCompleted ? '✓' : s.id}
-                  </div>
-                  <span className="text-[11px] truncate w-full">{s.title}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Main Tab Form Body */}
-        <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
-          
-          {/* TAB 1: Contact & Personal Info */}
-          {currentStep === 1 && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <h2 className="text-lg font-bold text-slate-900">
-                  1. Personal & Contact Information
-                </h2>
-                <span className="text-xs text-slate-400 font-medium">Fields with * are required</span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Full Name *
-                  </label>
-                  <input
-                    type="text"
-                    value={profile.name}
-                    onChange={(e) => updateProfile((p) => ({ ...p, name: e.target.value }))}
-                    className={`w-full px-3.5 py-2.5 text-xs rounded-xl border outline-none transition-all ${
-                      errors.name 
-                        ? 'border-red-400 focus:border-red-500 bg-red-50/20' 
-                        : 'border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500'
-                    }`}
-                    placeholder="Alex Morgan"
-                  />
-                  {errors.name && <p className="text-[11px] text-red-500 font-semibold mt-1">{errors.name}</p>}
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Email Address *
-                  </label>
-                  <input
-                    type="email"
-                    value={profile.email}
-                    onChange={(e) => updateProfile((p) => ({ ...p, email: e.target.value }))}
-                    className={`w-full px-3.5 py-2.5 text-xs rounded-xl border outline-none transition-all ${
-                      errors.email 
-                        ? 'border-red-400 focus:border-red-500 bg-red-50/20' 
-                        : 'border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500'
-                    }`}
-                    placeholder="alex@example.com"
-                  />
-                  {errors.email && <p className="text-[11px] text-red-500 font-semibold mt-1">{errors.email}</p>}
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Phone Number
-                  </label>
-                  <input
-                    type="text"
-                    value={profile.phone}
-                    onChange={(e) => updateProfile((p) => ({ ...p, phone: e.target.value }))}
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                    placeholder="+1 (555) 382-9014"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Current Location (City, State / Country)
-                  </label>
-                  <input
-                    type="text"
-                    value={profile.location}
-                    onChange={(e) => updateProfile((p) => ({ ...p, location: e.target.value }))}
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                    placeholder="San Francisco, CA"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    LinkedIn Profile URL
-                  </label>
-                  <input
-                    type="url"
-                    value={profile.linkedInUrl}
-                    onChange={(e) => updateProfile((p) => ({ ...p, linkedInUrl: e.target.value }))}
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                    placeholder="https://linkedin.com/in/username"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    GitHub Profile URL
-                  </label>
-                  <input
-                    type="url"
-                    value={profile.githubUrl}
-                    onChange={(e) => updateProfile((p) => ({ ...p, githubUrl: e.target.value }))}
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                    placeholder="https://github.com/username"
-                  />
-                </div>
-
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Portfolio / Personal Website URL
-                  </label>
-                  <input
-                    type="url"
-                    value={profile.portfolioUrl}
-                    onChange={(e) => updateProfile((p) => ({ ...p, portfolioUrl: e.target.value }))}
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
-                    placeholder="https://alexmorgan.dev"
-                  />
-                </div>
-
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Professional Summary (Used for ATS Header & Elevator Pitch)
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={profile.summary}
-                    onChange={(e) => updateProfile((p) => ({ ...p, summary: e.target.value }))}
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none leading-relaxed"
-                    placeholder="A concise, factual 3-sentence summary of your core domain expertise, years of experience, and primary accomplishments."
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: Roles & Targets */}
-          {currentStep === 2 && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <h2 className="text-lg font-bold text-slate-900">
-                  2. Target Roles & Search Criteria
-                </h2>
-                <span className="text-xs text-slate-400 font-medium">Controls automated job discovery & scoring</span>
-              </div>
-
-              {/* Target Job Titles */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Target Job Titles * (At least 1 required)
-                </label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {profile.targetJobTitles.map((title, idx) => (
-                    <span
-                      key={idx}
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200"
-                    >
-                      {title}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateProfile((p) => ({
-                            ...p,
-                            targetJobTitles: p.targetJobTitles.filter((_, i) => i !== idx),
-                          }))
-                        }
-                        className="hover:text-red-600 font-bold ml-1"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newTitle}
-                    onChange={(e) => setNewTitle(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && newTitle.trim()) {
-                        e.preventDefault();
-                        updateProfile((p) => ({
-                          ...p,
-                          targetJobTitles: [...p.targetJobTitles, newTitle.trim()],
-                        }));
-                        setNewTitle('');
-                      }
-                    }}
-                    placeholder="e.g. Senior Full Stack Engineer, Tech Lead (Press Enter)"
-                    className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (newTitle.trim()) {
-                        updateProfile((p) => ({
-                          ...p,
-                          targetJobTitles: [...p.targetJobTitles, newTitle.trim()],
-                        }));
-                        setNewTitle('');
-                      }
-                    }}
-                    className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold"
-                  >
-                    Add Title
-                  </button>
-                </div>
-                {errors.targetJobTitles && (
-                  <p className="text-[11px] text-red-500 font-semibold mt-1">{errors.targetJobTitles}</p>
+                <h1 className="text-2xl font-black text-slate-900 tracking-tight animate-title-shimmer">
+                  Profile Builder
+                </h1>
+                {isDirty && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200 animate-pulse">
+                    Unsaved Changes
+                  </span>
                 )}
               </div>
+              <p className="text-xs sm:text-sm text-slate-500 mt-1">
+                Every detail is strictly used by Claude to generate ATS-optimized resumes and fill job applications without hallucinating.
+              </p>
+            </div>
 
-              {/* Preferred Locations */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Preferred Job Locations (Cities, States, or Remote)
-                </label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {profile.preferredLocations.map((loc, idx) => (
-                    <span
-                      key={idx}
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200"
-                    >
-                      {loc}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateProfile((p) => ({
-                            ...p,
-                            preferredLocations: p.preferredLocations.filter((_, i) => i !== idx),
-                          }))
-                        }
-                        className="hover:text-red-600 font-bold ml-1"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
+            <div className="flex flex-wrap items-center gap-3">
+              <ProfileCompletenessRing profile={profile} />
+
+              <button
+                onClick={() => saveProfile(false)}
+                disabled={saving || saveSuccessMorph}
+                className={`min-w-[155px] justify-center inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs shadow-md transition-all duration-200 self-start sm:self-auto disabled:opacity-50 hover:-translate-y-0.5 active:scale-95 ${saveSuccessMorph
+                    ? 'bg-emerald-600 text-white shadow-emerald-200'
+                    : isDirty
+                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200'
+                      : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                  }`}
+              >
+                {saving ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+                    <span>Saving...</span>
+                  </>
+                ) : saveSuccessMorph ? (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-200 animate-checkmark-draw shrink-0" />
+                    <span>Changes Saved!</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 shrink-0" />
+                    <span>Save Changes</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Live Pipeline Telemetry Banner */}
+          {pipelineStatus && (
+            <div className={`p-4 rounded-2xl border transition-all duration-300 animate-in fade-in slide-in-from-top-2 ${pipelineStatus.isRunning
+                ? 'bg-indigo-50/70 border-indigo-200 shadow-sm shadow-indigo-100/50'
+                : pipelineStatus.currentStep === 'error'
+                  ? 'bg-red-50 border-red-200'
+                  : pipelineStatus.currentStep === 'paused'
+                    ? 'bg-amber-50 border-amber-200'
+                    : 'bg-slate-50 border-slate-200'
+              }`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-transform ${pipelineStatus.isRunning
+                      ? 'bg-indigo-600 text-white animate-spin'
+                      : pipelineStatus.currentStep === 'paused'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-emerald-600 text-white animate-sparkle-ambient'
+                    }`}>
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                        Background Pipeline
+                      </span>
+                      <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 transition-all ${pipelineStatus.isRunning
+                          ? 'bg-indigo-100 text-indigo-700 animate-pulse'
+                          : pipelineStatus.currentStep === 'paused'
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-emerald-100 text-emerald-800 animate-spring-pop'
+                        }`}>
+                        {pipelineStatus.currentStep === 'completed' && (
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600 inline" />
+                        )}
+                        <span>{pipelineStatus.currentStep.toUpperCase().replace('_', ' ')}</span>
+                      </span>
+                      {pipelineStatus.resumeVersionLabel && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-800">
+                          <AnimatedNumber
+                            value={parseInt((pipelineStatus.resumeVersionLabel || '').replace(/\D/g, ''), 10) || 45}
+                            prefix="v"
+                            duration={800}
+                          />
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-600 mt-0.5 transition-opacity duration-300">
+                      {pipelineStatus.message}
+                    </p>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newLocation}
-                    onChange={(e) => setNewLocation(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && newLocation.trim()) {
-                        e.preventDefault();
-                        updateProfile((p) => ({
-                          ...p,
-                          preferredLocations: [...p.preferredLocations, newLocation.trim()],
-                        }));
-                        setNewLocation('');
-                      }
-                    }}
-                    placeholder="e.g. Remote, San Francisco, CA, New York, NY (Press Enter)"
-                    className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
-                  />
+
+                <div className="flex items-center gap-2">
                   <button
-                    type="button"
-                    onClick={() => {
-                      if (newLocation.trim()) {
-                        updateProfile((p) => ({
-                          ...p,
-                          preferredLocations: [...p.preferredLocations, newLocation.trim()],
-                        }));
-                        setNewLocation('');
-                      }
-                    }}
-                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-bold text-slate-700"
+                    onClick={handleManualPipelineTrigger}
+                    disabled={isTriggeringPipeline || pipelineStatus.isRunning}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 shadow-sm disabled:opacity-50 hover:-translate-y-0.5 active:scale-95 transition-all"
+                    title="Run pipeline now"
                   >
-                    Add Location
+                    <RefreshCw className={`w-3.5 h-3.5 ${isTriggeringPipeline ? 'animate-spin' : ''}`} />
+                    <span>Run Pipeline Now</span>
                   </button>
                 </div>
               </div>
 
-              {/* Work Arrangement & Authorization */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Work Arrangement Preference
-                  </label>
-                  <select
-                    value={profile.workPreference}
-                    onChange={(e: any) =>
-                      updateProfile((p) => ({ ...p, workPreference: e.target.value }))
-                    }
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none bg-white font-medium"
-                  >
-                    <option value="remote">Remote Only</option>
-                    <option value="hybrid">Hybrid</option>
-                    <option value="onsite">On-Site</option>
-                    <option value="any">Open to Any (Remote, Hybrid, Onsite)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Work Authorization Status (For Form Answering)
-                  </label>
-                  <input
-                    type="text"
-                    value={profile.workAuthorization}
-                    onChange={(e) =>
-                      updateProfile((p) => ({ ...p, workAuthorization: e.target.value }))
-                    }
-                    placeholder="US Citizen / Authorized without sponsorship"
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
+              {pipelineStatus.isRunning && (
+                <div className="mt-3 w-full bg-indigo-100 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className="bg-gradient-to-r from-indigo-500 via-indigo-600 to-indigo-700 h-1.5 rounded-full transition-all duration-500 ease-out animate-shimmer-slide"
+                    style={{ width: `${Math.max(5, pipelineStatus.stepProgress)}%` }}
                   />
                 </div>
+              )}
+            </div>
+          )}
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Desired Minimum Salary ($/year)
-                  </label>
-                  <input
-                    type="number"
-                    value={profile.salaryRange.min}
-                    onChange={(e) =>
-                      updateProfile((p) => ({
-                        ...p,
-                        salaryRange: { ...p.salaryRange, min: Number(e.target.value) },
-                      }))
-                    }
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
-                  />
-                </div>
+          {/* Step Indicator Progress Stepper with Sliding Highlight */}
+          <StepTabs
+            steps={STEPS}
+            currentStep={currentStep}
+            onSelectStep={handleStepSelect}
+            completedStepIds={[1, 2, 3, 4, 5, 6].filter((id) => {
+              if (id === 1) return Boolean(profile.name && profile.email);
+              if (id === 2) return Boolean(profile.targetJobTitles && profile.targetJobTitles.length > 0);
+              if (id === 3) return Boolean(profile.experience && profile.experience.length > 0);
+              if (id === 4) return Boolean(profile.education && profile.education.length > 0);
+              if (id === 5) return Boolean(profile.skills && profile.skills.length > 0);
+              if (id === 6) return Boolean((profile.projects && profile.projects.length > 0) || (profile.languages && profile.languages.length > 0));
+              return false;
+            })}
+            stepErrorIds={[
+              ...(errors.name || errors.email ? [1] : []),
+              ...(errors.targetJobTitles ? [2] : []),
+            ]}
+            warnStepId={warnStepId}
+          />
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                    Desired Maximum Salary ($/year)
-                  </label>
-                  <input
-                    type="number"
-                    value={profile.salaryRange.max}
-                    onChange={(e) =>
-                      updateProfile((p) => ({
-                        ...p,
-                        salaryRange: { ...p.salaryRange, max: Number(e.target.value) },
-                      }))
-                    }
-                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
-                  />
+          {/* Step Welcome Moment Intro Banner */}
+          {stepIntroBanner && (
+            <div className="relative overflow-hidden p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-indigo-900 text-white shadow-md border border-indigo-800/40 animate-in fade-in slide-in-from-top-2 duration-300">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center shrink-0">
+                    <Sparkles className="w-4 h-4 text-indigo-300 animate-sparkle-ambient" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-indigo-200 px-2.5 py-0.5 rounded-full bg-indigo-900/80 border border-indigo-700/60">
+                        Step {currentStep} Focus
+                      </span>
+                      <h3 className="text-xs sm:text-sm font-bold text-white">
+                        {stepIntroBanner.headline}
+                      </h3>
+                    </div>
+                    <p className="text-xs text-indigo-100/80 mt-1 leading-relaxed">
+                      {stepIntroBanner.tip}
+                    </p>
+                  </div>
                 </div>
+                <button
+                  onClick={() => setStepIntroBanner(null)}
+                  className="text-indigo-300 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors shrink-0"
+                  title="Dismiss tip"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
           )}
 
-          {/* TAB 3: Experience */}
-          {currentStep === 3 && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <div>
-                  <h2 className="text-lg font-bold text-slate-900">
-                    3. Work Experience & Achievements
-                  </h2>
-                  <p className="text-xs text-slate-400">Strictly verified facts used in ATS resumes and screening answers</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const newExp: ExperienceItem = {
-                      id: `exp_${Date.now()}`,
-                      company: 'New Company',
-                      position: 'Software Engineer',
-                      location: 'Remote',
-                      startDate: '2022-01',
-                      endDate: '',
-                      current: true,
-                      description: 'Architecting scalable enterprise cloud applications.',
-                      highlights: [
-                        'Spearheaded core feature development resulting in measurable performance improvement.',
-                      ],
-                    };
-                    updateProfile((p) => ({ ...p, experience: [newExp, ...p.experience] }));
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add Position
-                </button>
-              </div>
+          {/* Screen Reader Live Step Announcement */}
+          <div className="sr-only" aria-live="polite">
+            {srAnnouncement}
+          </div>
 
-              <div className="space-y-6">
-                {profile.experience.map((exp, idx) => (
-                  <div key={exp.id} className="p-5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100">
-                        Position #{idx + 1}
-                      </span>
+          {/* Main Tab Form Body with Direction-Aware Transition */}
+          <div
+            ref={formCardRef}
+            className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6 overflow-hidden transition-[height] duration-300"
+          >
+            <div
+              key={currentStep}
+              className={`transition-all duration-300 ease-out transform ${stepDirection === 'jump'
+                  ? 'animate-in fade-in zoom-in-95 duration-250'
+                  : stepDirection === 'forward'
+                    ? 'animate-card-enter-forward animate-in fade-in-50 slide-in-from-right-4 duration-300'
+                    : 'animate-card-enter-backward animate-in fade-in-50 slide-in-from-left-4 duration-300'
+                }`}
+            >
+
+              {/* TAB 1: Contact & Personal Info */}
+              {currentStep === 1 && (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h2 className="text-lg font-bold text-slate-900">
+                      1. Personal & Contact Information
+                    </h2>
+                    <span className="text-xs text-slate-400 font-medium">Fields with * are required</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* Full Name */}
+                    <div className="group">
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 transition-colors group-focus-within:text-indigo-600">
+                        Full Name *
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={profile.name}
+                          onBlur={() => {
+                            if (!profile.name?.trim()) triggerFieldShake('name');
+                          }}
+                          onChange={(e) => updateProfile((p) => ({ ...p, name: e.target.value }))}
+                          className={`w-full px-3.5 py-2.5 text-xs rounded-xl border outline-none transition-all ${shakingFields.name ? 'animate-field-shake' : ''
+                            } ${errors.name
+                              ? 'border-red-400 focus:border-red-500 bg-red-50/20'
+                              : 'border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10'
+                            }`}
+                          placeholder="Alex Morgan"
+                        />
+                        {profile.name?.trim().length >= 2 && !errors.name && (
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 animate-spring-pop">
+                            <CheckCircle2 className="w-4 h-4" />
+                          </span>
+                        )}
+                      </div>
+                      {errors.name && <p className="text-[11px] text-red-500 font-semibold mt-1 animate-in fade-in slide-in-from-top-1">{errors.name}</p>}
+                    </div>
+
+                    {/* Email Address */}
+                    <div className="group">
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 transition-colors group-focus-within:text-indigo-600">
+                        Email Address *
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="email"
+                          value={profile.email}
+                          onBlur={() => {
+                            if (!profile.email?.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profile.email)) {
+                              triggerFieldShake('email');
+                            }
+                          }}
+                          onChange={(e) => updateProfile((p) => ({ ...p, email: e.target.value }))}
+                          className={`w-full px-3.5 py-2.5 text-xs rounded-xl border outline-none transition-all ${shakingFields.email ? 'animate-field-shake' : ''
+                            } ${errors.email
+                              ? 'border-red-400 focus:border-red-500 bg-red-50/20'
+                              : 'border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10'
+                            }`}
+                          placeholder="alex@example.com"
+                        />
+                        {/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profile.email || '') && !errors.email && (
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 animate-spring-pop">
+                            <CheckCircle2 className="w-4 h-4" />
+                          </span>
+                        )}
+                      </div>
+                      {errors.email && <p className="text-[11px] text-red-500 font-semibold mt-1 animate-in fade-in slide-in-from-top-1">{errors.email}</p>}
+                    </div>
+
+                    {/* Phone */}
+                    <div className="group">
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 transition-colors group-focus-within:text-indigo-600">
+                        Phone Number
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={profile.phone}
+                          onChange={(e) => updateProfile((p) => ({ ...p, phone: e.target.value }))}
+                          className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all"
+                          placeholder="+1 (555) 382-9014"
+                        />
+                        {profile.phone && profile.phone.trim().length >= 7 && (
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 animate-spring-pop">
+                            <CheckCircle2 className="w-4 h-4" />
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Location */}
+                    <div className="group">
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 transition-colors group-focus-within:text-indigo-600">
+                        Current Location (City, State / Country)
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={profile.location}
+                          onChange={(e) => updateProfile((p) => ({ ...p, location: e.target.value }))}
+                          className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all"
+                          placeholder="San Francisco, CA"
+                        />
+                        {profile.location && profile.location.trim().length >= 2 && (
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 animate-spring-pop">
+                            <CheckCircle2 className="w-4 h-4" />
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* LinkedIn Profile */}
+                    <div className="group">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-bold text-slate-700 uppercase tracking-wider transition-colors group-focus-within:text-indigo-600">
+                          LinkedIn Profile URL
+                        </label>
+                        {profile.linkedInUrl && profile.linkedInUrl.includes('linkedin.com') && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 animate-spring-pop">
+                            <Linkedin className="w-3 h-3" />
+                            <span>Connected</span>
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="url"
+                        value={profile.linkedInUrl}
+                        onChange={(e) => updateProfile((p) => ({ ...p, linkedInUrl: e.target.value }))}
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all"
+                        placeholder="https://linkedin.com/in/username"
+                      />
+                    </div>
+
+                    {/* GitHub Profile */}
+                    <div className="group">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-bold text-slate-700 uppercase tracking-wider transition-colors group-focus-within:text-indigo-600">
+                          GitHub Profile URL
+                        </label>
+                        {profile.githubUrl && profile.githubUrl.includes('github.com') && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-800 animate-spring-pop">
+                            <Github className="w-3 h-3" />
+                            <span>Connected</span>
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="url"
+                        value={profile.githubUrl}
+                        onChange={(e) => updateProfile((p) => ({ ...p, githubUrl: e.target.value }))}
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all"
+                        placeholder="https://github.com/username"
+                      />
+                    </div>
+
+                    {/* Portfolio URL */}
+                    <div className="sm:col-span-2 group">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-bold text-slate-700 uppercase tracking-wider transition-colors group-focus-within:text-indigo-600">
+                          Portfolio / Personal Website URL
+                        </label>
+                        {profile.portfolioUrl && profile.portfolioUrl.includes('http') && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 animate-spring-pop">
+                            <Globe className="w-3 h-3" />
+                            <span>Verified URL</span>
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="url"
+                        value={profile.portfolioUrl}
+                        onChange={(e) => updateProfile((p) => ({ ...p, portfolioUrl: e.target.value }))}
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all"
+                        placeholder="https://alexmorgan.dev"
+                      />
+                    </div>
+
+                    {/* Professional Summary (Auto-grow, char counter, AI Tip) */}
+                    <div className="sm:col-span-2 group">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-bold text-slate-700 uppercase tracking-wider transition-colors group-focus-within:text-indigo-600">
+                          Professional Summary (Used for ATS Header & Elevator Pitch)
+                        </label>
+                        <span className={`text-[11px] font-bold transition-colors ${(profile.summary?.length || 0) < 100
+                            ? 'text-amber-600'
+                            : (profile.summary?.length || 0) <= 500
+                              ? 'text-emerald-600'
+                              : 'text-slate-500'
+                          }`}>
+                          {profile.summary?.length || 0} characters
+                        </span>
+                      </div>
+                      <textarea
+                        rows={4}
+                        value={profile.summary}
+                        onChange={(e) => {
+                          e.target.style.height = 'auto';
+                          e.target.style.height = `${e.target.scrollHeight}px`;
+                          updateProfile((p) => ({ ...p, summary: e.target.value }));
+                        }}
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none leading-relaxed transition-all resize-y min-h-[96px]"
+                        placeholder="A concise, factual 3-sentence summary of your core domain expertise, years of experience, and primary accomplishments."
+                      />
+
+                      {/* AI Tip Shimmer Banner */}
+                      {(profile.summary?.length || 0) < 80 && (
+                        <div className="mt-2 p-2.5 rounded-xl bg-gradient-to-r from-indigo-50/80 via-purple-50/80 to-indigo-50/80 border border-indigo-100 flex items-start gap-2 animate-in fade-in duration-300">
+                          <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0 mt-0.5 animate-sparkle-ambient" />
+                          <p className="text-[11px] text-indigo-900 leading-snug">
+                            <strong>AI Tip:</strong> Include your primary tech stack, total years of experience, and 1 quantifiable impact metric (e.g. <em>&quot;scaled high-traffic apps to 2M+ users&quot;</em>) for optimal ATS ranking.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: Roles & Targets */}
+              {currentStep === 2 && (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h2 className="text-lg font-bold text-slate-900">
+                      2. Target Roles & Search Criteria
+                    </h2>
+                    <span className="text-xs text-slate-400 font-medium">Controls automated job discovery & scoring</span>
+                  </div>
+
+                  {/* Target Job Titles */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Target Job Titles * (At least 1 required)
+                    </label>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {profile.targetJobTitles.map((title, idx) => (
+                        <span
+                          key={idx}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200"
+                        >
+                          {title}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateProfile((p) => ({
+                                ...p,
+                                targetJobTitles: p.targetJobTitles.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="hover:text-red-600 font-bold ml-1"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newTitle}
+                        onChange={(e) => setNewTitle(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && newTitle.trim()) {
+                            e.preventDefault();
+                            updateProfile((p) => ({
+                              ...p,
+                              targetJobTitles: [...p.targetJobTitles, newTitle.trim()],
+                            }));
+                            setNewTitle('');
+                          }
+                        }}
+                        placeholder="e.g. Senior Full Stack Engineer, Tech Lead (Press Enter)"
+                        className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
+                      />
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
+                          if (newTitle.trim()) {
+                            updateProfile((p) => ({
+                              ...p,
+                              targetJobTitles: [...p.targetJobTitles, newTitle.trim()],
+                            }));
+                            setNewTitle('');
+                          }
+                        }}
+                        className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold"
+                      >
+                        Add Title
+                      </button>
+                    </div>
+                    {errors.targetJobTitles && (
+                      <p className="text-[11px] text-red-500 font-semibold mt-1">{errors.targetJobTitles}</p>
+                    )}
+                  </div>
+
+                  {/* Preferred Locations */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Preferred Job Locations (Cities, States, or Remote)
+                    </label>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {profile.preferredLocations.map((loc, idx) => (
+                        <span
+                          key={idx}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200"
+                        >
+                          {loc}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateProfile((p) => ({
+                                ...p,
+                                preferredLocations: p.preferredLocations.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="hover:text-red-600 font-bold ml-1"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newLocation}
+                        onChange={(e) => setNewLocation(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && newLocation.trim()) {
+                            e.preventDefault();
+                            updateProfile((p) => ({
+                              ...p,
+                              preferredLocations: [...p.preferredLocations, newLocation.trim()],
+                            }));
+                            setNewLocation('');
+                          }
+                        }}
+                        placeholder="e.g. Remote, San Francisco, CA, New York, NY (Press Enter)"
+                        className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (newLocation.trim()) {
+                            updateProfile((p) => ({
+                              ...p,
+                              preferredLocations: [...p.preferredLocations, newLocation.trim()],
+                            }));
+                            setNewLocation('');
+                          }
+                        }}
+                        className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-bold text-slate-700"
+                      >
+                        Add Location
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Work Arrangement & Authorization */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Work Arrangement Preference
+                      </label>
+                      <select
+                        value={profile.workPreference}
+                        onChange={(e: any) =>
+                          updateProfile((p) => ({ ...p, workPreference: e.target.value }))
+                        }
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none bg-white font-medium"
+                      >
+                        <option value="remote">Remote Only</option>
+                        <option value="hybrid">Hybrid</option>
+                        <option value="onsite">On-Site</option>
+                        <option value="any">Open to Any (Remote, Hybrid, Onsite)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Work Authorization Status (For Form Answering)
+                      </label>
+                      <input
+                        type="text"
+                        value={profile.workAuthorization}
+                        onChange={(e) =>
+                          updateProfile((p) => ({ ...p, workAuthorization: e.target.value }))
+                        }
+                        placeholder="US Citizen / Authorized without sponsorship"
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Desired Minimum Salary ($/year)
+                      </label>
+                      <input
+                        type="number"
+                        value={profile.salaryRange.min}
+                        onChange={(e) =>
                           updateProfile((p) => ({
                             ...p,
-                            experience: p.experience.filter((_, i) => i !== idx),
+                            salaryRange: { ...p.salaryRange, min: Number(e.target.value) },
                           }))
                         }
-                        className="text-slate-400 hover:text-red-600 p-1 rounded-lg hover:bg-red-50 transition-colors"
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Desired Maximum Salary ($/year)
+                      </label>
+                      <input
+                        type="number"
+                        value={profile.salaryRange.max}
+                        onChange={(e) =>
+                          updateProfile((p) => ({
+                            ...p,
+                            salaryRange: { ...p.salaryRange, max: Number(e.target.value) },
+                          }))
+                        }
+                        className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-200 focus:border-indigo-500 outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: Experience */}
+              {currentStep === 3 && (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div>
+                      <h2 className="text-lg font-bold text-slate-900">
+                        3. Work Experience & Achievements
+                      </h2>
+                      <p className="text-xs text-slate-400">Strictly verified facts used in ATS resumes and screening answers</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newExp: ExperienceItem = {
+                          id: `exp_${Date.now()}`,
+                          company: 'New Company',
+                          position: 'Software Engineer',
+                          location: 'Remote',
+                          startDate: '2022-01',
+                          endDate: '',
+                          current: true,
+                          description: 'Architecting scalable enterprise cloud applications.',
+                          highlights: [
+                            'Spearheaded core feature development resulting in measurable performance improvement.',
+                          ],
+                        };
+                        updateProfile((p) => ({ ...p, experience: [newExp, ...p.experience] }));
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Add Position
+                    </button>
+                  </div>
+
+                  <div className="space-y-6">
+                    {profile.experience.map((exp, idx) => (
+                      <div key={exp.id} className="p-5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100">
+                            Position #{idx + 1}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateProfile((p) => ({
+                                ...p,
+                                experience: p.experience.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="text-slate-400 hover:text-red-600 p-1 rounded-lg hover:bg-red-50 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[11px] font-bold text-slate-600 block mb-1">Company *</label>
+                            <input
+                              type="text"
+                              value={exp.company}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                updateProfile((p) => ({
+                                  ...p,
+                                  experience: p.experience.map((item, i) =>
+                                    i === idx ? { ...item, company: val } : item
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-slate-600 block mb-1">Job Title *</label>
+                            <input
+                              type="text"
+                              value={exp.position}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                updateProfile((p) => ({
+                                  ...p,
+                                  experience: p.experience.map((item, i) =>
+                                    i === idx ? { ...item, position: val } : item
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-slate-600 block mb-1">Location</label>
+                            <input
+                              type="text"
+                              value={exp.location}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                updateProfile((p) => ({
+                                  ...p,
+                                  experience: p.experience.map((item, i) =>
+                                    i === idx ? { ...item, location: val } : item
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                              placeholder="San Francisco, CA (Hybrid)"
+                            />
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1">
+                              <label className="text-[11px] font-bold text-slate-600 block mb-1">Start Date</label>
+                              <input
+                                type="text"
+                                value={exp.startDate}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  updateProfile((p) => ({
+                                    ...p,
+                                    experience: p.experience.map((item, i) =>
+                                      i === idx ? { ...item, startDate: val } : item
+                                    ),
+                                  }));
+                                }}
+                                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white"
+                                placeholder="2022-03"
+                              />
+                            </div>
+                            <div className="flex-1">
+                              <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                                {exp.current ? 'Current Role' : 'End Date'}
+                              </label>
+                              <input
+                                type="text"
+                                disabled={exp.current}
+                                value={exp.current ? 'Present' : exp.endDate}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  updateProfile((p) => ({
+                                    ...p,
+                                    experience: p.experience.map((item, i) =>
+                                      i === idx ? { ...item, endDate: val } : item
+                                    ),
+                                  }));
+                                }}
+                                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white disabled:bg-slate-100 disabled:text-slate-500"
+                                placeholder="2024-01"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id={`current_role_${exp.id}`}
+                            checked={exp.current}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              updateProfile((p) => ({
+                                ...p,
+                                experience: p.experience.map((item, i) =>
+                                  i === idx ? { ...item, current: checked, endDate: checked ? '' : item.endDate } : item
+                                ),
+                              }));
+                            }}
+                            className="rounded text-indigo-600 focus:ring-indigo-500"
+                          />
+                          <label htmlFor={`current_role_${exp.id}`} className="text-xs font-semibold text-slate-700">
+                            I currently work in this role
+                          </label>
+                        </div>
+
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                            Accomplishments & Bullets (One per line)
+                          </label>
+                          <textarea
+                            rows={3}
+                            value={exp.highlights.join('\n')}
+                            onChange={(e) => {
+                              const lines = e.target.value.split('\n');
+                              updateProfile((p) => ({
+                                ...p,
+                                experience: p.experience.map((item, i) =>
+                                  i === idx ? { ...item, highlights: lines } : item
+                                ),
+                              }));
+                            }}
+                            className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white leading-relaxed focus:border-indigo-500 outline-none"
+                            placeholder="Accomplished [X] as measured by [Y] by doing [Z]."
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: Education */}
+              {currentStep === 4 && (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h2 className="text-lg font-bold text-slate-900">4. Education Background</h2>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newEdu: EducationItem = {
+                          id: `edu_${Date.now()}`,
+                          institution: 'University Name',
+                          degree: 'Bachelor of Science',
+                          fieldOfStudy: 'Computer Science',
+                          startDate: '2017',
+                          endDate: '2021',
+                          current: false,
+                          grade: '3.8 GPA',
+                        };
+                        updateProfile((p) => ({ ...p, education: [...p.education, newEdu] }));
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Add Degree
+                    </button>
+                  </div>
+
+                  <div className="space-y-4">
+                    {profile.education.map((edu, idx) => (
+                      <div key={edu.id} className="p-5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100">
+                            Education #{idx + 1}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateProfile((p) => ({
+                                ...p,
+                                education: p.education.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="text-slate-400 hover:text-red-600 p-1"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[11px] font-bold text-slate-600 block mb-1">Institution *</label>
+                            <input
+                              type="text"
+                              value={edu.institution}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                updateProfile((p) => ({
+                                  ...p,
+                                  education: p.education.map((item, i) =>
+                                    i === idx ? { ...item, institution: val } : item
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                              placeholder="University of California, Berkeley"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-slate-600 block mb-1">Degree *</label>
+                            <input
+                              type="text"
+                              value={edu.degree}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                updateProfile((p) => ({
+                                  ...p,
+                                  education: p.education.map((item, i) =>
+                                    i === idx ? { ...item, degree: val } : item
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                              placeholder="Bachelor of Science"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-slate-600 block mb-1">Field of Study</label>
+                            <input
+                              type="text"
+                              value={edu.fieldOfStudy}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                updateProfile((p) => ({
+                                  ...p,
+                                  education: p.education.map((item, i) =>
+                                    i === idx ? { ...item, fieldOfStudy: val } : item
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                              placeholder="Computer Science"
+                            />
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1">
+                              <label className="text-[11px] font-bold text-slate-600 block mb-1">Graduation Year</label>
+                              <input
+                                type="text"
+                                value={edu.endDate}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  updateProfile((p) => ({
+                                    ...p,
+                                    education: p.education.map((item, i) =>
+                                      i === idx ? { ...item, endDate: val } : item
+                                    ),
+                                  }));
+                                }}
+                                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                                placeholder="2021"
+                              />
+                            </div>
+                            <div className="flex-1">
+                              <label className="text-[11px] font-bold text-slate-600 block mb-1">Grade / GPA</label>
+                              <input
+                                type="text"
+                                value={edu.grade || ''}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  updateProfile((p) => ({
+                                    ...p,
+                                    education: p.education.map((item, i) =>
+                                      i === idx ? { ...item, grade: val } : item
+                                    ),
+                                  }));
+                                }}
+                                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                                placeholder="3.8 GPA"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 5: Skills & Certifications */}
+              {currentStep === 5 && (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h2 className="text-lg font-bold text-slate-900">
+                      5. Categorized Skills & Certifications
+                    </h2>
+                    <span className="text-xs text-slate-400 font-medium">Used directly for job description match scoring</span>
+                  </div>
+
+                  {/* Skills */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                      Skills Inventory ({profile.skills.length} Total)
+                    </label>
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {profile.skills.map((skill, idx) => (
+                        <span
+                          key={skill.id || idx}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200 shadow-sm"
+                        >
+                          <span className="text-[10px] text-indigo-600 font-extrabold uppercase">
+                            [{skill.category}]
+                          </span>
+                          {skill.name}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateProfile((p) => ({
+                                ...p,
+                                skills: p.skills.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="hover:text-red-600 font-bold ml-1"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <select
+                        value={newSkillCategory}
+                        onChange={(e: any) => setNewSkillCategory(e.target.value)}
+                        className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white outline-none font-semibold text-slate-700"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <option value="Technical">Technical</option>
+                        <option value="Frameworks">Frameworks</option>
+                        <option value="Tools">Tools & Cloud</option>
+                        <option value="Soft Skills">Soft Skills</option>
+                      </select>
+
+                      <select
+                        value={newSkillLevel}
+                        onChange={(e: any) => setNewSkillLevel(e.target.value)}
+                        className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white outline-none font-semibold text-slate-700"
+                      >
+                        <option value="Beginner">Beginner</option>
+                        <option value="Intermediate">Intermediate</option>
+                        <option value="Advanced">Advanced</option>
+                        <option value="Expert">Expert</option>
+                      </select>
+
+                      <input
+                        type="text"
+                        value={newSkillName}
+                        onChange={(e) => setNewSkillName(e.target.value)}
+                        placeholder="Skill name (e.g. Next.js, Docker, PostgreSQL)"
+                        className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-slate-200 outline-none focus:border-indigo-500"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && newSkillName.trim()) {
+                            e.preventDefault();
+                            updateProfile((p) => ({
+                              ...p,
+                              skills: [
+                                ...p.skills,
+                                {
+                                  id: `sk_${Date.now()}`,
+                                  name: newSkillName.trim(),
+                                  category: newSkillCategory,
+                                  level: newSkillLevel,
+                                },
+                              ],
+                            }));
+                            setNewSkillName('');
+                          }
+                        }}
+                      />
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (newSkillName.trim()) {
+                            updateProfile((p) => ({
+                              ...p,
+                              skills: [
+                                ...p.skills,
+                                {
+                                  id: `sk_${Date.now()}`,
+                                  name: newSkillName.trim(),
+                                  category: newSkillCategory,
+                                  level: newSkillLevel,
+                                },
+                              ],
+                            }));
+                            setNewSkillName('');
+                          }
+                        }}
+                        className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition-colors shadow-sm"
+                      >
+                        Add Skill
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Certifications */}
+                  <div className="pt-4 border-t border-slate-100">
+                    <div className="flex items-center justify-between mb-3">
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                        Certifications & Licenses
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newCert: CertificationItem = {
+                            id: `cert_${Date.now()}`,
+                            name: 'New Certification Title',
+                            issuer: 'Issuing Body (e.g. AWS)',
+                            issueDate: '2023-04',
+                          };
+                          updateProfile((p) => ({
+                            ...p,
+                            certifications: [...p.certifications, newCert],
+                          }));
+                        }}
+                        className="text-xs font-bold text-indigo-600 hover:underline"
+                      >
+                        + Add Certification
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 block mb-1">Company *</label>
-                        <input
-                          type="text"
-                          value={exp.company}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateProfile((p) => ({
-                              ...p,
-                              experience: p.experience.map((item, i) =>
-                                i === idx ? { ...item, company: val } : item
-                              ),
-                            }));
-                          }}
-                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 block mb-1">Job Title *</label>
-                        <input
-                          type="text"
-                          value={exp.position}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateProfile((p) => ({
-                              ...p,
-                              experience: p.experience.map((item, i) =>
-                                i === idx ? { ...item, position: val } : item
-                              ),
-                            }));
-                          }}
-                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 block mb-1">Location</label>
-                        <input
-                          type="text"
-                          value={exp.location}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateProfile((p) => ({
-                              ...p,
-                              experience: p.experience.map((item, i) =>
-                                i === idx ? { ...item, location: val } : item
-                              ),
-                            }));
-                          }}
-                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                          placeholder="San Francisco, CA (Hybrid)"
-                        />
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1">
-                          <label className="text-[11px] font-bold text-slate-600 block mb-1">Start Date</label>
+                    <div className="space-y-3">
+                      {profile.certifications.map((cert, idx) => (
+                        <div key={cert.id} className="flex flex-col sm:flex-row items-center gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200">
                           <input
                             type="text"
-                            value={exp.startDate}
+                            value={cert.name}
                             onChange={(e) => {
                               const val = e.target.value;
                               updateProfile((p) => ({
                                 ...p,
-                                experience: p.experience.map((item, i) =>
-                                  i === idx ? { ...item, startDate: val } : item
+                                certifications: p.certifications.map((c, i) =>
+                                  i === idx ? { ...c, name: val } : c
+                                ),
+                              }));
+                            }}
+                            className="flex-1 w-full px-3 py-2 text-xs rounded-lg border border-slate-200 bg-white"
+                            placeholder="Certificate Name"
+                          />
+                          <input
+                            type="text"
+                            value={cert.issuer}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              updateProfile((p) => ({
+                                ...p,
+                                certifications: p.certifications.map((c, i) =>
+                                  i === idx ? { ...c, issuer: val } : c
+                                ),
+                              }));
+                            }}
+                            className="flex-1 w-full px-3 py-2 text-xs rounded-lg border border-slate-200 bg-white"
+                            placeholder="Issuer (e.g. AWS, Microsoft)"
+                          />
+                          <input
+                            type="text"
+                            value={cert.issueDate}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              updateProfile((p) => ({
+                                ...p,
+                                certifications: p.certifications.map((c, i) =>
+                                  i === idx ? { ...c, issueDate: val } : c
+                                ),
+                              }));
+                            }}
+                            className="w-full sm:w-28 px-3 py-2 text-xs rounded-lg border border-slate-200 bg-white"
+                            placeholder="2023-04"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateProfile((p) => ({
+                                ...p,
+                                certifications: p.certifications.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="text-slate-400 hover:text-red-600 p-2"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 6: Projects & Languages */}
+              {currentStep === 6 && (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h2 className="text-lg font-bold text-slate-900">
+                      6. Portfolio Projects & Languages
+                    </h2>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newProj: ProjectItem = {
+                          id: `proj_${Date.now()}`,
+                          title: 'Project Title',
+                          description: 'Concise project overview demonstrating technical impact.',
+                          techStack: ['Next.js', 'TypeScript', 'PostgreSQL'],
+                          bullets: ['Engineered full-stack features with 99.9% reliability.'],
+                        };
+                        updateProfile((p) => ({ ...p, projects: [...p.projects, newProj] }));
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Add Project
+                    </button>
+                  </div>
+
+                  {/* Projects */}
+                  <div className="space-y-5">
+                    {profile.projects.map((proj, idx) => (
+                      <div key={proj.id} className="p-5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100">
+                            Project #{idx + 1}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateProfile((p) => ({
+                                ...p,
+                                projects: p.projects.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="text-slate-400 hover:text-red-600 p-1"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[11px] font-bold text-slate-600 block mb-1">Project Name *</label>
+                            <input
+                              type="text"
+                              value={proj.title}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                updateProfile((p) => ({
+                                  ...p,
+                                  projects: p.projects.map((item, i) =>
+                                    i === idx ? { ...item, title: val } : item
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-bold text-slate-600 block mb-1">Live URL or Repo Link</label>
+                            <input
+                              type="text"
+                              value={proj.liveUrl || proj.repoUrl || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                updateProfile((p) => ({
+                                  ...p,
+                                  projects: p.projects.map((item, i) =>
+                                    i === idx ? { ...item, liveUrl: val } : item
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
+                              placeholder="https://github.com/user/project"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                            Technologies Used (comma separated)
+                          </label>
+                          <input
+                            type="text"
+                            value={proj.techStack.join(', ')}
+                            onChange={(e) => {
+                              const list = e.target.value.split(',').map((s) => s.trim());
+                              updateProfile((p) => ({
+                                ...p,
+                                projects: p.projects.map((item, i) =>
+                                  i === idx ? { ...item, techStack: list } : item
                                 ),
                               }));
                             }}
                             className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white"
-                            placeholder="2022-03"
+                            placeholder="React, TypeScript, AWS, Node.js"
                           />
                         </div>
-                        <div className="flex-1">
+
+                        <div>
                           <label className="text-[11px] font-bold text-slate-600 block mb-1">
-                            {exp.current ? 'Current Role' : 'End Date'}
+                            Bullet Points / Key Highlights (One per line)
                           </label>
-                          <input
-                            type="text"
-                            disabled={exp.current}
-                            value={exp.current ? 'Present' : exp.endDate}
+                          <textarea
+                            rows={2}
+                            value={proj.bullets.join('\n')}
                             onChange={(e) => {
-                              const val = e.target.value;
+                              const lines = e.target.value.split('\n');
                               updateProfile((p) => ({
                                 ...p,
-                                experience: p.experience.map((item, i) =>
-                                  i === idx ? { ...item, endDate: val } : item
+                                projects: p.projects.map((item, i) =>
+                                  i === idx ? { ...item, bullets: lines } : item
                                 ),
                               }));
                             }}
-                            className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white disabled:bg-slate-100 disabled:text-slate-500"
-                            placeholder="2024-01"
+                            className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none leading-relaxed"
                           />
                         </div>
                       </div>
+                    ))}
+                  </div>
+
+                  {/* Languages */}
+                  <div className="pt-4 border-t border-slate-100">
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                      Languages Spoken
+                    </label>
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {profile.languages.map((lang, idx) => (
+                        <span
+                          key={lang.id || idx}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200"
+                        >
+                          {lang.name} ({lang.proficiency})
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateProfile((p) => ({
+                                ...p,
+                                languages: p.languages.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="hover:text-red-600 font-bold ml-1"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-col sm:flex-row gap-2">
                       <input
-                        type="checkbox"
-                        id={`current_role_${exp.id}`}
-                        checked={exp.current}
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          updateProfile((p) => ({
-                            ...p,
-                            experience: p.experience.map((item, i) =>
-                              i === idx ? { ...item, current: checked, endDate: checked ? '' : item.endDate } : item
-                            ),
-                          }));
-                        }}
-                        className="rounded text-indigo-600 focus:ring-indigo-500"
+                        type="text"
+                        value={newLangName}
+                        onChange={(e) => setNewLangName(e.target.value)}
+                        placeholder="Language (e.g. English, Spanish, German)"
+                        className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-slate-200 outline-none"
                       />
-                      <label htmlFor={`current_role_${exp.id}`} className="text-xs font-semibold text-slate-700">
-                        I currently work in this role
-                      </label>
-                    </div>
-
-                    <div>
-                      <label className="text-[11px] font-bold text-slate-600 block mb-1">
-                        Accomplishments & Bullets (One per line)
-                      </label>
-                      <textarea
-                        rows={3}
-                        value={exp.highlights.join('\n')}
-                        onChange={(e) => {
-                          const lines = e.target.value.split('\n');
-                          updateProfile((p) => ({
-                            ...p,
-                            experience: p.experience.map((item, i) =>
-                              i === idx ? { ...item, highlights: lines } : item
-                            ),
-                          }));
+                      <select
+                        value={newLangProficiency}
+                        onChange={(e: any) => setNewLangProficiency(e.target.value)}
+                        className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white outline-none font-semibold text-slate-700"
+                      >
+                        <option value="Native">Native</option>
+                        <option value="Fluent">Fluent</option>
+                        <option value="Professional">Professional</option>
+                        <option value="Conversational">Conversational</option>
+                        <option value="Basic">Basic</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (newLangName.trim()) {
+                            updateProfile((p) => ({
+                              ...p,
+                              languages: [
+                                ...p.languages,
+                                {
+                                  id: `lang_${Date.now()}`,
+                                  name: newLangName.trim(),
+                                  proficiency: newLangProficiency,
+                                },
+                              ],
+                            }));
+                            setNewLangName('');
+                          }
                         }}
-                        className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white leading-relaxed focus:border-indigo-500 outline-none"
-                        placeholder="Accomplished [X] as measured by [Y] by doing [Z]."
-                      />
+                        className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700"
+                      >
+                        Add Language
+                      </button>
                     </div>
                   </div>
-                ))}
-              </div>
+                </div>
+              )}
             </div>
-          )}
 
-          {/* TAB 4: Education */}
-          {currentStep === 4 && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <h2 className="text-lg font-bold text-slate-900">4. Education Background</h2>
+            {/* Bottom Navigation Buttons */}
+            <div className="pt-6 border-t border-slate-100 flex items-center justify-between">
+              {currentStep > 1 ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    const newEdu: EducationItem = {
-                      id: `edu_${Date.now()}`,
-                      institution: 'University Name',
-                      degree: 'Bachelor of Science',
-                      fieldOfStudy: 'Computer Science',
-                      startDate: '2017',
-                      endDate: '2021',
-                      current: false,
-                      grade: '3.8 GPA',
-                    };
-                    updateProfile((p) => ({ ...p, education: [...p.education, newEdu] }));
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200"
+                  onClick={() => handleStepSelect(currentStep - 1)}
+                  className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 hover:-translate-x-0.5 transition-all"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add Degree
+                  <ArrowLeft className="w-4 h-4" />
+                  Previous Tab
                 </button>
-              </div>
+              ) : <div />}
 
-              <div className="space-y-4">
-                {profile.education.map((edu, idx) => (
-                  <div key={edu.id} className="p-5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100">
-                        Education #{idx + 1}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateProfile((p) => ({
-                            ...p,
-                            education: p.education.filter((_, i) => i !== idx),
-                          }))
-                        }
-                        className="text-slate-400 hover:text-red-600 p-1"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 block mb-1">Institution *</label>
-                        <input
-                          type="text"
-                          value={edu.institution}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateProfile((p) => ({
-                              ...p,
-                              education: p.education.map((item, i) =>
-                                i === idx ? { ...item, institution: val } : item
-                              ),
-                            }));
-                          }}
-                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                          placeholder="University of California, Berkeley"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 block mb-1">Degree *</label>
-                        <input
-                          type="text"
-                          value={edu.degree}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateProfile((p) => ({
-                              ...p,
-                              education: p.education.map((item, i) =>
-                                i === idx ? { ...item, degree: val } : item
-                              ),
-                            }));
-                          }}
-                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                          placeholder="Bachelor of Science"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 block mb-1">Field of Study</label>
-                        <input
-                          type="text"
-                          value={edu.fieldOfStudy}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateProfile((p) => ({
-                              ...p,
-                              education: p.education.map((item, i) =>
-                                i === idx ? { ...item, fieldOfStudy: val } : item
-                              ),
-                            }));
-                          }}
-                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                          placeholder="Computer Science"
-                        />
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1">
-                          <label className="text-[11px] font-bold text-slate-600 block mb-1">Graduation Year</label>
-                          <input
-                            type="text"
-                            value={edu.endDate}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              updateProfile((p) => ({
-                                ...p,
-                                education: p.education.map((item, i) =>
-                                  i === idx ? { ...item, endDate: val } : item
-                                ),
-                              }));
-                            }}
-                            className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                            placeholder="2021"
-                          />
-                        </div>
-                        <div className="flex-1">
-                          <label className="text-[11px] font-bold text-slate-600 block mb-1">Grade / GPA</label>
-                          <input
-                            type="text"
-                            value={edu.grade || ''}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              updateProfile((p) => ({
-                                ...p,
-                                education: p.education.map((item, i) =>
-                                  i === idx ? { ...item, grade: val } : item
-                                ),
-                              }));
-                            }}
-                            className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                            placeholder="3.8 GPA"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* TAB 5: Skills & Certifications */}
-          {currentStep === 5 && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <h2 className="text-lg font-bold text-slate-900">
-                  5. Categorized Skills & Certifications
-                </h2>
-                <span className="text-xs text-slate-400 font-medium">Used directly for job description match scoring</span>
-              </div>
-
-              {/* Skills */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                  Skills Inventory ({profile.skills.length} Total)
-                </label>
-                <div className="flex flex-wrap gap-2 mb-3">
-                  {profile.skills.map((skill, idx) => (
-                    <span
-                      key={skill.id || idx}
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200 shadow-sm"
-                    >
-                      <span className="text-[10px] text-indigo-600 font-extrabold uppercase">
-                        [{skill.category}]
-                      </span>
-                      {skill.name}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateProfile((p) => ({
-                            ...p,
-                            skills: p.skills.filter((_, i) => i !== idx),
-                          }))
-                        }
-                        className="hover:text-red-600 font-bold ml-1"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <select
-                    value={newSkillCategory}
-                    onChange={(e: any) => setNewSkillCategory(e.target.value)}
-                    className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white outline-none font-semibold text-slate-700"
-                  >
-                    <option value="Technical">Technical</option>
-                    <option value="Frameworks">Frameworks</option>
-                    <option value="Tools">Tools & Cloud</option>
-                    <option value="Soft Skills">Soft Skills</option>
-                  </select>
-
-                  <select
-                    value={newSkillLevel}
-                    onChange={(e: any) => setNewSkillLevel(e.target.value)}
-                    className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white outline-none font-semibold text-slate-700"
-                  >
-                    <option value="Beginner">Beginner</option>
-                    <option value="Intermediate">Intermediate</option>
-                    <option value="Advanced">Advanced</option>
-                    <option value="Expert">Expert</option>
-                  </select>
-
-                  <input
-                    type="text"
-                    value={newSkillName}
-                    onChange={(e) => setNewSkillName(e.target.value)}
-                    placeholder="Skill name (e.g. Next.js, Docker, PostgreSQL)"
-                    className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-slate-200 outline-none focus:border-indigo-500"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && newSkillName.trim()) {
-                        e.preventDefault();
-                        updateProfile((p) => ({
-                          ...p,
-                          skills: [
-                            ...p.skills,
-                            {
-                              id: `sk_${Date.now()}`,
-                              name: newSkillName.trim(),
-                              category: newSkillCategory,
-                              level: newSkillLevel,
-                            },
-                          ],
-                        }));
-                        setNewSkillName('');
-                      }
-                    }}
-                  />
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (newSkillName.trim()) {
-                        updateProfile((p) => ({
-                          ...p,
-                          skills: [
-                            ...p.skills,
-                            {
-                              id: `sk_${Date.now()}`,
-                              name: newSkillName.trim(),
-                              category: newSkillCategory,
-                              level: newSkillLevel,
-                            },
-                          ],
-                        }));
-                        setNewSkillName('');
-                      }
-                    }}
-                    className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition-colors shadow-sm"
-                  >
-                    Add Skill
-                  </button>
-                </div>
-              </div>
-
-              {/* Certifications */}
-              <div className="pt-4 border-t border-slate-100">
-                <div className="flex items-center justify-between mb-3">
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    Certifications & Licenses
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newCert: CertificationItem = {
-                        id: `cert_${Date.now()}`,
-                        name: 'New Certification Title',
-                        issuer: 'Issuing Body (e.g. AWS)',
-                        issueDate: '2023-04',
-                      };
-                      updateProfile((p) => ({
-                        ...p,
-                        certifications: [...p.certifications, newCert],
-                      }));
-                    }}
-                    className="text-xs font-bold text-indigo-600 hover:underline"
-                  >
-                    + Add Certification
-                  </button>
-                </div>
-
-                <div className="space-y-3">
-                  {profile.certifications.map((cert, idx) => (
-                    <div key={cert.id} className="flex flex-col sm:flex-row items-center gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200">
-                      <input
-                        type="text"
-                        value={cert.name}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          updateProfile((p) => ({
-                            ...p,
-                            certifications: p.certifications.map((c, i) =>
-                              i === idx ? { ...c, name: val } : c
-                            ),
-                          }));
-                        }}
-                        className="flex-1 w-full px-3 py-2 text-xs rounded-lg border border-slate-200 bg-white"
-                        placeholder="Certificate Name"
-                      />
-                      <input
-                        type="text"
-                        value={cert.issuer}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          updateProfile((p) => ({
-                            ...p,
-                            certifications: p.certifications.map((c, i) =>
-                              i === idx ? { ...c, issuer: val } : c
-                            ),
-                          }));
-                        }}
-                        className="flex-1 w-full px-3 py-2 text-xs rounded-lg border border-slate-200 bg-white"
-                        placeholder="Issuer (e.g. AWS, Microsoft)"
-                      />
-                      <input
-                        type="text"
-                        value={cert.issueDate}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          updateProfile((p) => ({
-                            ...p,
-                            certifications: p.certifications.map((c, i) =>
-                              i === idx ? { ...c, issueDate: val } : c
-                            ),
-                          }));
-                        }}
-                        className="w-full sm:w-28 px-3 py-2 text-xs rounded-lg border border-slate-200 bg-white"
-                        placeholder="2023-04"
-                      />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateProfile((p) => ({
-                            ...p,
-                            certifications: p.certifications.filter((_, i) => i !== idx),
-                          }))
-                        }
-                        className="text-slate-400 hover:text-red-600 p-2"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 6: Projects & Languages */}
-          {currentStep === 6 && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <h2 className="text-lg font-bold text-slate-900">
-                  6. Portfolio Projects & Languages
-                </h2>
+              <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => {
-                    const newProj: ProjectItem = {
-                      id: `proj_${Date.now()}`,
-                      title: 'Project Title',
-                      description: 'Concise project overview demonstrating technical impact.',
-                      techStack: ['Next.js', 'TypeScript', 'PostgreSQL'],
-                      bullets: ['Engineered full-stack features with 99.9% reliability.'],
-                    };
-                    updateProfile((p) => ({ ...p, projects: [...p.projects, newProj] }));
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200"
+                  onClick={() => saveProfile(false)}
+                  disabled={saving || saveSuccessMorph}
+                  className="min-w-[130px] justify-center inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs transition-all disabled:opacity-50"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add Project
+                  {saving ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-slate-600 border-t-transparent rounded-full animate-spin shrink-0" />
+                      <span>Saving...</span>
+                    </>
+                  ) : saveSuccessMorph ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 animate-checkmark-draw shrink-0" />
+                      <span>Saved!</span>
+                    </>
+                  ) : (
+                    <span>Save Progress</span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => saveProfile(true)}
+                  disabled={saving || saveSuccessMorph}
+                  className={`min-w-[185px] justify-center inline-flex items-center gap-2 px-6 py-2.5 rounded-xl text-white font-extrabold text-xs shadow-md transition-all duration-200 disabled:opacity-50 active:scale-95 ${saveSuccessMorph
+                      ? 'bg-emerald-600 shadow-emerald-200'
+                      : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-100 hover:-translate-y-0.5'
+                    }`}
+                >
+                  {saving ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+                      <span>Saving...</span>
+                    </>
+                  ) : saveSuccessMorph ? (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 text-emerald-200 animate-checkmark-draw shrink-0" />
+                      <span>Step Saved!</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>{currentStep === 6 ? 'Save & Review Resumes' : 'Save & Next Tab'}</span>
+                      <ArrowRight className="w-4 h-4 shrink-0" />
+                    </>
+                  )}
                 </button>
               </div>
-
-              {/* Projects */}
-              <div className="space-y-5">
-                {profile.projects.map((proj, idx) => (
-                  <div key={proj.id} className="p-5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100">
-                        Project #{idx + 1}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateProfile((p) => ({
-                            ...p,
-                            projects: p.projects.filter((_, i) => i !== idx),
-                          }))
-                        }
-                        className="text-slate-400 hover:text-red-600 p-1"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 block mb-1">Project Name *</label>
-                        <input
-                          type="text"
-                          value={proj.title}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateProfile((p) => ({
-                              ...p,
-                              projects: p.projects.map((item, i) =>
-                                i === idx ? { ...item, title: val } : item
-                              ),
-                            }));
-                          }}
-                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-600 block mb-1">Live URL or Repo Link</label>
-                        <input
-                          type="text"
-                          value={proj.liveUrl || proj.repoUrl || ''}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            updateProfile((p) => ({
-                              ...p,
-                              projects: p.projects.map((item, i) =>
-                                i === idx ? { ...item, liveUrl: val } : item
-                              ),
-                            }));
-                          }}
-                          className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none"
-                          placeholder="https://github.com/user/project"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="text-[11px] font-bold text-slate-600 block mb-1">
-                        Technologies Used (comma separated)
-                      </label>
-                      <input
-                        type="text"
-                        value={proj.techStack.join(', ')}
-                        onChange={(e) => {
-                          const list = e.target.value.split(',').map((s) => s.trim());
-                          updateProfile((p) => ({
-                            ...p,
-                            projects: p.projects.map((item, i) =>
-                              i === idx ? { ...item, techStack: list } : item
-                            ),
-                          }));
-                        }}
-                        className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white"
-                        placeholder="React, TypeScript, AWS, Node.js"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-[11px] font-bold text-slate-600 block mb-1">
-                        Bullet Points / Key Highlights (One per line)
-                      </label>
-                      <textarea
-                        rows={2}
-                        value={proj.bullets.join('\n')}
-                        onChange={(e) => {
-                          const lines = e.target.value.split('\n');
-                          updateProfile((p) => ({
-                            ...p,
-                            projects: p.projects.map((item, i) =>
-                              i === idx ? { ...item, bullets: lines } : item
-                            ),
-                          }));
-                        }}
-                        className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:border-indigo-500 outline-none leading-relaxed"
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Languages */}
-              <div className="pt-4 border-t border-slate-100">
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                  Languages Spoken
-                </label>
-                <div className="flex flex-wrap gap-2 mb-3">
-                  {profile.languages.map((lang, idx) => (
-                    <span
-                      key={lang.id || idx}
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200"
-                    >
-                      {lang.name} ({lang.proficiency})
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateProfile((p) => ({
-                            ...p,
-                            languages: p.languages.filter((_, i) => i !== idx),
-                          }))
-                        }
-                        className="hover:text-red-600 font-bold ml-1"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    type="text"
-                    value={newLangName}
-                    onChange={(e) => setNewLangName(e.target.value)}
-                    placeholder="Language (e.g. English, Spanish, German)"
-                    className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-slate-200 outline-none"
-                  />
-                  <select
-                    value={newLangProficiency}
-                    onChange={(e: any) => setNewLangProficiency(e.target.value)}
-                    className="px-3 py-2 text-xs rounded-xl border border-slate-200 bg-white outline-none font-semibold text-slate-700"
-                  >
-                    <option value="Native">Native</option>
-                    <option value="Fluent">Fluent</option>
-                    <option value="Professional">Professional</option>
-                    <option value="Conversational">Conversational</option>
-                    <option value="Basic">Basic</option>
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (newLangName.trim()) {
-                        updateProfile((p) => ({
-                          ...p,
-                          languages: [
-                            ...p.languages,
-                            {
-                              id: `lang_${Date.now()}`,
-                              name: newLangName.trim(),
-                              proficiency: newLangProficiency,
-                            },
-                          ],
-                        }));
-                        setNewLangName('');
-                      }
-                    }}
-                    className="px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-bold hover:bg-slate-900"
-                  >
-                    Add Language
-                  </button>
-                </div>
-              </div>
             </div>
-          )}
 
-          {/* Bottom Navigation Buttons */}
-          <div className="pt-6 border-t border-slate-100 flex items-center justify-between">
-            {currentStep > 1 ? (
-              <button
-                type="button"
-                onClick={() => setCurrentStep(currentStep - 1)}
-                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                Previous Tab
-              </button>
-            ) : <div />}
-
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => saveProfile(false)}
-                disabled={saving}
-                className="px-5 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs transition-all disabled:opacity-50"
-              >
-                {saving ? 'Saving...' : 'Save Progress'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => saveProfile(true)}
-                disabled={saving}
-                className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs shadow-md shadow-indigo-100 transition-all disabled:opacity-50"
-              >
-                <span>{currentStep === 6 ? 'Save & Review Resumes' : 'Save & Next Tab'}</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
           </div>
 
-        </div>
+          {/* Step 6 Fullscreen Confetti Celebration */}
+          {showConfetti && (
+            <ConfettiCelebration onComplete={() => setShowConfetti(false)} durationMs={1800} />
+          )}
 
-      </main>
+          {/* Step 6 Completion Celebration Modal */}
+          {showCompletionModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30 backdrop-blur-xs animate-in fade-in duration-200">
+              <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 border border-slate-200 shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-250">
+                {/* Top Accent Gradient Bar */}
+                <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-indigo-500 via-emerald-500 to-purple-500" />
+
+                <div className="text-center space-y-4">
+                  {/* Celebration Badge */}
+                  <div className="w-16 h-16 rounded-2xl bg-emerald-100 border border-emerald-200 text-emerald-600 flex items-center justify-center mx-auto shadow-inner animate-spring-pop">
+                    <CheckCircle2 className="w-9 h-9" />
+                  </div>
+
+                  <div>
+                    <span className="text-[11px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200 inline-block mb-2">
+                      Profile 100% Completed & Verified
+                    </span>
+                    <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                      Autonomous Application Agent Ready!
+                    </h2>
+                    <p className="text-xs sm:text-sm text-slate-600 mt-2 leading-relaxed">
+                      All ATS keywords, contact channels, work history, and targeting preferences have been validated. Your agent now has everything it needs to tailor applications and run autonomous submissions.
+                    </p>
+                  </div>
+
+                  {/* Quick Action Navigation Buttons */}
+                  <div className="grid grid-cols-1 gap-2.5 pt-2 text-left">
+                    <button
+                      onClick={() => router.push('/resume')}
+                      className="flex items-center justify-between p-3.5 rounded-2xl bg-indigo-50 hover:bg-indigo-100/80 border border-indigo-200 text-indigo-950 font-bold text-xs transition-all group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
+                          <Sparkles className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="font-extrabold text-slate-900">Review ATS Tailored Resumes</div>
+                          <div className="text-[11px] text-slate-500 font-normal">Generate docx/pdf versions with ATS score &gt; 90</div>
+                        </div>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-indigo-600 group-hover:translate-x-1 transition-transform" />
+                    </button>
+
+                    <button
+                      onClick={() => router.push('/jobs')}
+                      className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-900 font-bold text-xs transition-all group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
+                          <Briefcase className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="font-extrabold text-slate-900">Explore Matched Jobs</div>
+                          <div className="text-[11px] text-slate-500 font-normal">Browse real-time openings matched to your targets</div>
+                        </div>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-slate-600 group-hover:translate-x-1 transition-transform" />
+                    </button>
+
+                    <button
+                      onClick={() => router.push('/tracker')}
+                      className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-900 font-bold text-xs transition-all group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
+                          <CheckCircle2 className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="font-extrabold text-slate-900">Application Tracker</div>
+                          <div className="text-[11px] text-slate-500 font-normal">Monitor live submissions & review human actions</div>
+                        </div>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-slate-600 group-hover:translate-x-1 transition-transform" />
+                    </button>
+                  </div>
+
+                  {/* Close Button */}
+                  <div className="pt-2">
+                    <button
+                      onClick={() => setShowCompletionModal(false)}
+                      className="w-full py-2.5 rounded-xl text-xs font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+                    >
+                      Return to Profile Builder
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </main>
+      </PageSlotReveal>
     </div>
   );
 }

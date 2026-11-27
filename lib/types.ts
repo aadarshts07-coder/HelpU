@@ -198,3 +198,181 @@ export interface PipelineStatus {
   jobsAppliedCount: number;
   error: string | null;
 }
+
+export type UserAccountStatus = 'UNVERIFIED' | 'ACTIVE' | 'SUSPENDED';
+
+export interface UserAccount {
+  id: string;
+  email: string;
+  name: string;
+  status: UserAccountStatus;
+  emailVerified: string | null; // ISO timestamp
+  passwordHash: string;
+  failedLoginAttempts: number;
+  lockedUntil: string | null; // ISO timestamp
+  twoFactorEnabled: boolean;
+  twoFactorSecret?: string; // AES-256 encrypted
+  backupCodes?: string[]; // SHA-256 hashed recovery codes
+  lastLoginAt?: string;
+  passwordChangedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VerificationToken {
+  id: string;
+  userId: string;
+  email: string;
+  tokenHash: string; // SHA-256 of 32-byte crypto token
+  otpHash?: string; // SHA-256 of 6-digit numeric OTP
+  type: 'EMAIL_VERIFICATION' | 'PASSWORD_RESET' | 'MAGIC_LINK';
+  expiresAt: string;
+  usedAt: string | null;
+  createdAt: string;
+}
+
+export interface SecurityAuditLog {
+  id: string;
+  userId?: string;
+  email: string;
+  event: 
+    | 'SIGNUP' 
+    | 'LOGIN_SUCCESS' 
+    | 'LOGIN_FAILURE' 
+    | 'EMAIL_VERIFIED' 
+    | 'PASSWORD_RESET_REQUEST' 
+    | 'PASSWORD_RESET_SUCCESS' 
+    | 'PASSWORD_CHANGED' 
+    | '2FA_ENABLED' 
+    | '2FA_DISABLED' 
+    | 'ACCOUNT_LOCKED'
+    | 'TOKEN_RESENT';
+  ipAddress: string;
+  userAgent: string;
+  metadata?: Record<string, any>;
+  createdAt: string;
+}
+
+export interface GoalActionStep {
+  id: string;
+  text: string;
+  phase?: 'week_1_2' | 'week_3_6' | 'week_7_plus';
+}
+
+export interface GoalGapCard {
+  id: string;
+  category: string;
+  title: string;
+  severity: 'high' | 'medium' | 'low';
+  resumeNow: string;
+  goalNeeds: string;
+  whyItMatters: string;
+  actionSteps: GoalActionStep[];
+}
+
+export interface RecommendedCertification {
+  certKey: string;
+  closesGaps: number[];
+  whyForGoal: string;
+  roadmapPhase: 'quickWins' | 'buildProof' | 'polish';
+  tags: ('best_roi' | 'fastest' | 'free' | 'most_requested' | 'stretch')[];
+  readinessBonus: number;
+  catalogEntry?: {
+    key: string;
+    name: string;
+    issuer: string;
+    level: 'Foundational' | 'Associate' | 'Professional' | 'Specialty';
+    exam_code: string | null;
+    category: string;
+    cost_usd_min: number;
+    cost_usd_max: number;
+    is_free: boolean;
+    study_weeks: number;
+    validity_years: number | null;
+    difficulty: 1 | 2 | 3 | 4 | 5;
+    official_url: string;
+    common_employers: string[];
+    skills: string[];
+    aliases: string[];
+    last_verified_at: string;
+  };
+  openJobsMentionCount?: number;
+  userStatus?: 'not_started' | 'studying' | 'booked' | 'earned';
+  targetDate?: string;
+  earnedDate?: string;
+  credentialUrl?: string;
+  matchScoreBefore?: number;
+  matchScoreAfter?: number;
+  evidence?: {
+    certKey: string;
+    totalMentionCount: number;
+    hiringNowCount: number;
+    historicalCount: number;
+    lastCheckedAt: string;
+    topEmployers: {
+      company: string;
+      openRolesCount: number;
+      sampleRoles: {
+        title: string;
+        company: string;
+        location: string;
+        url: string;
+        source: string;
+        isRecent: boolean;
+        postedAt?: string;
+      }[];
+    }[];
+    sampleRoles: {
+      title: string;
+      company: string;
+      location: string;
+      url: string;
+      source: string;
+      isRecent: boolean;
+      postedAt?: string;
+    }[];
+  };
+}
+
+export interface GoalCertificationRecord {
+  id: string;
+  user_id: string;
+  analysis_id: string;
+  cert_key: string;
+  status: 'not_started' | 'studying' | 'booked' | 'earned';
+  target_date?: string | null;
+  earned_date?: string | null;
+  credential_url?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GoalRoadmapPhase {
+  phaseId: 'week_1_2' | 'week_3_6' | 'week_7_plus';
+  title: string;
+  subtitle: string;
+  items: string[];
+}
+
+export interface GoalAnalysisResult {
+  readinessScore: number;
+  summary: string;
+  stats: {
+    gapsFound: number;
+    highImpactCount: number;
+    timelineMonths: number;
+  };
+  gaps: GoalGapCard[];
+  roadmap: GoalRoadmapPhase[];
+  certifications?: RecommendedCertification[];
+}
+
+export interface GoalAnalysisRecord {
+  id: string;
+  user_id: string;
+  goal: string;
+  timeline: string;
+  result: GoalAnalysisResult;
+  completed_steps: string[];
+  created_at: string;
+}

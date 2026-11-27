@@ -1,7 +1,10 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
+import PageSlotReveal from '@/components/PageSlotReveal';
+import TwoFactorSettingsModal from '@/components/TwoFactorSettingsModal';
 import { 
   Settings, 
   ShieldCheck, 
@@ -15,7 +18,9 @@ import {
   Play, 
   KeyRound,
   CheckCircle2,
-  Mail
+  Mail,
+  Smartphone,
+  ExternalLink
 } from 'lucide-react';
 import { UserSettings } from '@/lib/types';
 
@@ -38,6 +43,8 @@ export default function SettingsPage() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showTwoFactorModal, setShowTwoFactorModal] = useState(false);
+  const [twoFactorActive, setTwoFactorActive] = useState(false);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -132,7 +139,8 @@ export default function SettingsPage() {
     <div className="flex min-h-[calc(100vh-4rem)]">
       <Sidebar />
 
-      <main className="flex-1 p-6 lg:p-10 max-w-5xl mx-auto space-y-8">
+      <PageSlotReveal pageTitle="Settings and Privacy">
+        <main className="flex-1 p-6 lg:p-10 max-w-5xl mx-auto space-y-8">
         
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-200">
@@ -457,7 +465,91 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* 4. Privacy, GDPR Export & Account Deletion */}
+        {/* 4. Account Security & Two-Factor Authentication */}
+        <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-5">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-indigo-600" />
+                <span>Account Security & Verification</span>
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Protect your account with multi-factor authentication, verified email, and password controls.
+              </p>
+            </div>
+            <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Email Verified</span>
+            </span>
+          </div>
+
+          <div className="space-y-4 text-xs">
+            {/* 2FA Section */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-200/80">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600 shrink-0 mt-0.5">
+                  <Smartphone className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="font-bold text-slate-900">
+                    Two-Factor Authentication (2FA / TOTP)
+                  </p>
+                  <p className="text-slate-500 text-[11px] mt-0.5 leading-relaxed">
+                    Require a 6-digit code from Google Authenticator, Authy, or 1Password when signing in.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowTwoFactorModal(true)}
+                className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold text-xs transition-all shadow-xs shrink-0 ${
+                  twoFactorActive
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                }`}
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>{twoFactorActive ? '2FA Active (Configure)' : 'Enable 2FA'}</span>
+              </button>
+            </div>
+
+            {/* Password & Active Session Controls */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between">
+                <div>
+                  <p className="font-bold text-slate-900">Account Password</p>
+                  <p className="text-[11px] text-slate-500">Encrypted with memory-hard scrypt</p>
+                </div>
+                <Link
+                  href="/forgot-password"
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+                >
+                  Change →
+                </Link>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between">
+                <div>
+                  <p className="font-bold text-slate-900">Active Session</p>
+                  <p className="text-[11px] text-emerald-600 font-semibold">Active now • AES-256 GCM</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await fetch('/api/auth/logout', { method: 'POST' });
+                    window.location.href = '/login';
+                  }}
+                  className="text-xs font-bold text-rose-600 hover:text-rose-800 transition-colors"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 5. Privacy, GDPR Export & Account Deletion */}
         <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
           <h2 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
             Data Ownership & Privacy Rights
@@ -465,6 +557,15 @@ export default function SettingsPage() {
           <p className="text-xs text-slate-500 leading-relaxed">
             HELP U complies with GDPR & CCPA privacy standards. We never sell your personal information or application history.
           </p>
+          <div className="p-3 rounded-2xl bg-indigo-50/70 border border-indigo-100/80 text-[11px] text-indigo-950 flex items-start gap-2.5">
+            <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <strong className="font-bold text-slate-900 block">Location Privacy Guarantee</strong>
+              <p className="text-slate-600 leading-relaxed">
+                When you use "Use My Precise Location", coordinates are used solely in memory to detect nearby job openings within your chosen radius. We round coordinates to approximately 1 km before performing geo-queries and never log or permanently store your exact coordinates.
+              </p>
+            </div>
+          </div>
 
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
             <div>
@@ -496,10 +597,11 @@ export default function SettingsPage() {
         </div>
 
       </main>
+      </PageSlotReveal>
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-xs p-4 animate-in fade-in">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center gap-3 text-rose-600">
               <AlertTriangle className="w-6 h-6" />
@@ -541,6 +643,13 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+
+      {/* Two-Factor Authentication Setup Modal */}
+      <TwoFactorSettingsModal
+        isOpen={showTwoFactorModal}
+        onClose={() => setShowTwoFactorModal(false)}
+        onSuccess={() => setTwoFactorActive(true)}
+      />
 
     </div>
   );

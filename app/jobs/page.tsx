@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
+import PageSlotReveal from '@/components/PageSlotReveal';
 import { 
   Search, 
   Sparkles, 
@@ -16,10 +17,15 @@ import {
   ChevronDown,
   AlertCircle,
   Zap,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Mail,
+  BookOpen
 } from 'lucide-react';
 import { JobListing, UserProfile, UserSettings } from '@/lib/types';
 import { BRAND } from '@/lib/config/brand';
+import SkillGapBadge from '@/components/SkillGapBadge';
+import RecruiterOutreachModal from '@/components/RecruiterOutreachModal';
+import Link from 'next/link';
 
 export default function JobsPage() {
   const [jobs, setJobs] = useState<JobListing[]>([]);
@@ -33,6 +39,7 @@ export default function JobsPage() {
   const [filterMinScore, setFilterMinScore] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [applyResultBanner, setApplyResultBanner] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [outreachJob, setOutreachJob] = useState<JobListing | null>(null);
 
   const loadData = async (triggerScrape = false) => {
     try {
@@ -156,7 +163,8 @@ export default function JobsPage() {
     <div className="flex min-h-[calc(100vh-4rem)]">
       <Sidebar />
 
-      <main className="flex-1 p-6 lg:p-10 max-w-7xl mx-auto space-y-6">
+      <PageSlotReveal pageTitle="Job Discovery & Match Scoring">
+        <main className="flex-1 p-6 lg:p-10 max-w-7xl mx-auto space-y-6">
         
         {/* Header & Controls */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-200">
@@ -271,16 +279,17 @@ export default function JobsPage() {
           </div>
         </div>
 
-        {/* Job Listings Grid */}
+        {/* Job Listings Grid with Cascading Staggered Entrance */}
         <div className="grid grid-cols-1 gap-4">
-          {filteredJobs.map((job) => {
+          {filteredJobs.map((job, idx) => {
             const isEligible = job.matchScore >= (settings?.jobMatchThreshold || 70);
             const isApplying = applyingJobId === job.id;
 
             return (
               <div
                 key={job.id}
-                className={`bg-white rounded-2xl border p-5 sm:p-6 transition-all hover:shadow-md ${
+                style={{ animationDelay: `${Math.min(idx * 55, 550)}ms` }}
+                className={`bg-white rounded-2xl border p-5 sm:p-6 transition-all hover:shadow-md animate-row-cascade ${
                   job.isBlacklisted
                     ? 'border-slate-200 opacity-60'
                     : isEligible
@@ -295,18 +304,14 @@ export default function JobsPage() {
                     <div className="flex items-center gap-2.5 flex-wrap">
                       <h2 className="text-base sm:text-lg font-black text-slate-900">{job.title}</h2>
                       
-                      {/* Match Score Badge */}
-                      <span
-                        className={`text-xs font-extrabold px-3 py-0.5 rounded-full border ${
-                          job.matchScore >= 90
-                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                            : job.matchScore >= 70
-                            ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                            : 'bg-amber-50 text-amber-700 border-amber-200'
-                        }`}
-                      >
-                        {job.matchScore}% Match
-                      </span>
+                      {/* Skill Gap & Fit Badge */}
+                      <SkillGapBadge
+                        score={job.matchScore}
+                        matchReasons={job.matchReasons}
+                        missingSkills={job.missingSkills}
+                        jobTitle={job.title}
+                        company={job.company}
+                      />
 
                       {/* Portal Badge */}
                       <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600">
@@ -358,29 +363,50 @@ export default function JobsPage() {
                   </div>
 
                   {/* Right: Actions */}
-                  <div className="flex flex-col sm:flex-row lg:flex-col items-start lg:items-end gap-2.5 shrink-0">
+                  <div className="flex flex-col sm:flex-row lg:flex-col items-start lg:items-end gap-2 shrink-0">
                     <button
                       onClick={() => handleApplySingle(job)}
                       disabled={isApplying || job.isBlacklisted}
                       className={`w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-extrabold shadow-sm transition-all flex items-center justify-center gap-2 ${
                         isEligible && !job.isBlacklisted
                           ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-100'
-                          : 'bg-slate-800 hover:bg-slate-900 text-white'
+                          : 'bg-indigo-600 hover:bg-indigo-700 text-white'
                       } disabled:opacity-50`}
                     >
                       <Send className="w-3.5 h-3.5" />
                       <span>{isApplying ? 'Applying...' : 'Auto-Apply Now'}</span>
                     </button>
 
-                    <a
-                      href={job.applyUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-indigo-600"
-                    >
-                      <span>View Portal Page</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
+                    <div className="flex items-center gap-2 w-full justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setOutreachJob(job)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all shadow-sm"
+                        title="Draft tailored recruiter outreach note or email"
+                      >
+                        <Mail className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>Outreach Note</span>
+                      </button>
+
+                      <Link
+                        href={`/interview-prep?role=${encodeURIComponent(job.title)}&company=${encodeURIComponent(job.company)}`}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-indigo-100 bg-indigo-50/70 hover:bg-indigo-100/70 text-indigo-700 text-xs font-bold transition-all"
+                        title="Simulate interview questions for this specific role"
+                      >
+                        <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>Prep Qs</span>
+                      </Link>
+
+                      <a
+                        href={job.applyUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-1.5 rounded-xl border border-slate-200 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 transition-colors inline-block"
+                        title="View Portal Page"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
                   </div>
 
                 </div>
@@ -390,6 +416,15 @@ export default function JobsPage() {
         </div>
 
       </main>
+      </PageSlotReveal>
+
+      <RecruiterOutreachModal
+        isOpen={Boolean(outreachJob)}
+        onClose={() => setOutreachJob(null)}
+        jobTitle={outreachJob?.title || ''}
+        company={outreachJob?.company || ''}
+        matchScore={outreachJob?.matchScore || 85}
+      />
     </div>
   );
 }

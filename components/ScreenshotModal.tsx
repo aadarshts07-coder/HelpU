@@ -17,7 +17,7 @@ export default function ScreenshotModal({ application, isOpen, onClose, onApprov
   if (!isOpen || !application) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto animate-in fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in">
       <div className="bg-white rounded-3xl max-w-3xl w-full p-6 sm:p-8 shadow-2xl border border-slate-200 my-8">
         
         {/* Header */}
@@ -146,7 +146,7 @@ export default function ScreenshotModal({ application, isOpen, onClose, onApprov
           ) : (
             <div className="grid grid-cols-1 gap-4 max-h-80 overflow-y-auto p-1">
               {application.screenshots.map((shot, idx) => (
-                <div key={idx} className="rounded-2xl overflow-hidden border border-slate-200 bg-slate-900/5">
+                <div key={idx} className="rounded-2xl overflow-hidden border border-slate-200 bg-slate-50">
                   <div className="bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-600 flex justify-between items-center">
                     <span>Screenshot #{idx + 1} — Verification Audit</span>
                     <a
