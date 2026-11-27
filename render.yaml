@@ -10,7 +10,7 @@ services:
     runtime: node
     plan: free # Switch to 'starter' ($7/mo) for 24/7 always-on without spin-downs
     region: oregon # Choose: oregon, frankfurt, ohio, singapore
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm run start
     healthCheckPath: /api/health
     envVars:

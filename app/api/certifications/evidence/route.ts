@@ -3,6 +3,8 @@ import { evidenceService } from '@/lib/certifications/evidence-service';
 import { CERTIFICATION_CATALOG_MAP } from '@/lib/data/certifications-catalog';
 import { DiscoveredCertification } from '@/lib/certifications/types';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
