@@ -17211,6 +17211,1540 @@
   ],
   "goalAnalyses": [
     {
+      "id": "goal_1795755246136_59aiv",
+      "user_id": "usr_demo_101",
+      "goal": "Senior Full Stack Engineer",
+      "timeline": "1 month",
+      "result": {
+        "readinessScore": 58,
+        "summary": "Your profile demonstrates strong foundational capabilities, but reaching \"Senior Full Stack Engineer\" within 1 month requires bridging 2 high-impact technical and leadership gaps. Focus on concrete architectural scale metrics and targeted credentials to position yourself as an immediate day-one contributor.",
+        "stats": {
+          "gapsFound": 4,
+          "highImpactCount": 2,
+          "timelineMonths": 1
+        },
+        "gaps": [
+          {
+            "id": "gap_1_scale",
+            "category": "Distributed Systems & Scale",
+            "title": "High-Throughput Caching & Database Sharding Patterns",
+            "severity": "high",
+            "resumeNow": "Mentions relational PostgreSQL CRUD queries and general database design, but lacks explicit proof of distributed caching or handling concurrency bottlenecks (>5,000 QPS).",
+            "goalNeeds": "Senior Full Stack Engineer roles require proven ownership of low-latency caching tiers (Redis/Memcached), cache invalidation strategies, database connection pooling, and sub-50ms p99 SLAs.",
+            "whyItMatters": "Senior engineering panels aggressively drill into cache-aside vs write-through consistency and failure domain isolation during technical screens.",
+            "actionSteps": [
+              {
+                "id": "step_1_1",
+                "text": "Architect an open-source reference microservice demonstrating Redis cache-aside with write-through consistency and benchmarked p99 latency under load.",
+                "phase": "week_1_2"
+              },
+              {
+                "id": "step_1_2",
+                "text": "Rewrite existing experience bullets into quantified XYZ impact: \"Reduced database CPU load by 54% and p99 query latency from 340ms to 38ms by designing a multi-tier caching layer.\"",
+                "phase": "week_1_2"
+              },
+              {
+                "id": "step_1_3",
+                "text": "Document failover strategies, circuit breakers, and rate-limiting middleware in a short technical system design RFC.",
+                "phase": "week_3_6"
+              }
+            ]
+          },
+          {
+            "id": "gap_2_leadership",
+            "category": "Engineering Leadership & Cross-Functional Impact",
+            "title": "Cross-Functional Technical Direction & Architecture RFC Ownership",
+            "severity": "high",
+            "resumeNow": "Framed primarily around individual task delivery and ticket completion rather than driving technical roadmaps, writing architecture RFCs, or mentoring engineers.",
+            "goalNeeds": "Hiring committees for Senior Full Stack Engineer seek candidates who demonstrate business acumen, cross-team alignment with Product & Design, and proactive technical risk mitigation.",
+            "whyItMatters": "Candidates without demonstrable project sponsorship and architectural RFC ownership are frequently down-leveled to mid-level roles.",
+            "actionSteps": [
+              {
+                "id": "step_2_1",
+                "text": "Reframe projects on your resume around business KPIs (churn reduction, developer velocity, infrastructure cost savings) rather than tools alone.",
+                "phase": "week_1_2"
+              },
+              {
+                "id": "step_2_2",
+                "text": "Draft and publish a technical RFC template detailing trade-offs, security postures, and migration rollbacks for an ambitious feature.",
+                "phase": "week_3_6"
+              },
+              {
+                "id": "step_2_3",
+                "text": "Add explicit mentorship accomplishments: \"Mentored 3 junior/mid engineers and established team-wide TypeScript & automated testing standards.\"",
+                "phase": "week_1_2"
+              }
+            ]
+          },
+          {
+            "id": "gap_3_cloud",
+            "category": "Cloud Infrastructure & Observability",
+            "title": "Automated CI/CD Pipelines, Docker Containerization & OpenTelemetry",
+            "severity": "medium",
+            "resumeNow": "Mentions cloud platforms generally, but lacks concrete metrics regarding automated canary deployments, telemetry tracing, or infrastructure-as-code.",
+            "goalNeeds": "Strong familiarity with modern observability stacks (Prometheus, OpenTelemetry, Datadog), containerization, and zero-downtime blue/green deployment workflows.",
+            "whyItMatters": "Modern engineering organizations expect engineers to own their code in production with automated alerting, MTTR reduction, and monitoring.",
+            "actionSteps": [
+              {
+                "id": "step_3_1",
+                "text": "Set up an automated GitHub Actions CI/CD workflow with linting, unit test coverage gates (>85%), and automated preview deployments.",
+                "phase": "week_1_2"
+              },
+              {
+                "id": "step_3_2",
+                "text": "Add structured logging, health check endpoints, and distributed tracing instrumentation to your featured portfolio project.",
+                "phase": "week_3_6"
+              }
+            ]
+          },
+          {
+            "id": "gap_4_narrative",
+            "category": "Interview Polish & Thought Leadership",
+            "title": "System Design Narrative Polish & Public Technical Artifacts",
+            "severity": "low",
+            "resumeNow": "GitHub profile and resume show solid technical projects, but lack concise one-paragraph architectural diagrams or public system design write-ups.",
+            "goalNeeds": "Polished technical elevator pitch, clean public repository readmes with architecture diagrams, and prepared STAR interview stories.",
+            "whyItMatters": "Clear verbal and visual communication of system design concepts is the deciding factor between a standard hire and an offer with top-band equity compensation.",
+            "actionSteps": [
+              {
+                "id": "step_4_1",
+                "text": "Prepare 4 high-stakes STAR behavioral narratives emphasizing conflict resolution, architectural pivots, and critical production outage post-mortems.",
+                "phase": "week_7_plus"
+              },
+              {
+                "id": "step_4_2",
+                "text": "Add a clean Mermaid or SVG system architecture diagram to your primary open-source portfolio repository.",
+                "phase": "week_7_plus"
+              }
+            ]
+          }
+        ],
+        "roadmap": [
+          {
+            "phaseId": "week_1_2",
+            "title": "Weeks 1–2: Quick Wins",
+            "subtitle": "Resume reframing, high-impact XYZ metrics & immediate positioning",
+            "items": [
+              "Audit all past experience bullets and inject quantifiable throughput, latency, and business metrics.",
+              "Align headline and keywords specifically targeting \"Senior Full Stack Engineer\" to achieve a 90%+ ATS score.",
+              "Set up automated GitHub Actions CI/CD pipeline on personal repositories."
+            ]
+          },
+          {
+            "phaseId": "week_3_6",
+            "title": "Weeks 3–6: Build Proof",
+            "subtitle": "Tangible architecture artifacts & live deployed reference projects",
+            "items": [
+              "Build and publish a production-grade reference microservice with caching, rate limiting, and observability.",
+              "Draft an engineering RFC demonstrating deep technical decision-making and trade-off analysis.",
+              "Conduct 3 timed system design simulations tackling high-traffic scale scenarios."
+            ]
+          },
+          {
+            "phaseId": "week_7_plus",
+            "title": "Weeks 7+: Polish & Showcase",
+            "subtitle": "Interview narratives, system design simulations & targeted outreach",
+            "items": [
+              "Rehearse STAR behavioral leadership stories emphasizing mentorship and cross-functional ownership.",
+              "Initiate targeted outreach to engineering managers and talent partners at target firms.",
+              "Finalize portfolio showcase with system architecture diagrams and live demo links."
+            ]
+          }
+        ],
+        "certifications": [
+          {
+            "certKey": "aws-saa",
+            "closesGaps": [
+              0,
+              2
+            ],
+            "whyForGoal": "Validates deep cloud architecture and high-availability patterns required for Senior Full Stack Engineer, instantly boosting recruiter screening rates.",
+            "roadmapPhase": "quickWins",
+            "tags": [
+              "best_roi",
+              "most_requested"
+            ],
+            "readinessBonus": 5,
+            "catalogEntry": {
+              "key": "aws-saa",
+              "name": "AWS Certified Solutions Architect – Associate",
+              "issuer": "Amazon Web Services",
+              "level": "Associate",
+              "exam_code": "SAA-C03",
+              "category": "Cloud Architecture",
+              "cost_usd_min": 150,
+              "cost_usd_max": 150,
+              "is_free": false,
+              "study_weeks": 6,
+              "validity_years": 3,
+              "difficulty": 3,
+              "official_url": "https://aws.amazon.com/certification/certified-solutions-architect-associate/",
+              "common_employers": [
+                "Amazon",
+                "Capital One",
+                "Stripe",
+                "Netflix",
+                "Deloitte",
+                "Slalom",
+                "Accenture",
+                "JPMorgan Chase"
+              ],
+              "skills": [
+                "AWS IAM",
+                "Amazon EC2",
+                "Amazon S3",
+                "Amazon VPC",
+                "AWS Lambda",
+                "Amazon RDS",
+                "DynamoDB",
+                "High Availability"
+              ],
+              "aliases": [
+                "AWS SAA",
+                "AWS Solutions Architect Associate",
+                "SAA-C03",
+                "AWS Solutions Architect"
+              ],
+              "last_verified_at": "2026-11-01T00:00:00Z"
+            },
+            "openJobsMentionCount": 4,
+            "userStatus": "not_started",
+            "matchScoreBefore": 73,
+            "matchScoreAfter": 85,
+            "evidence": {
+              "certKey": "aws-saa",
+              "totalMentionCount": 4,
+              "hiringNowCount": 2,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:54:06.130Z",
+              "topEmployers": [
+                {
+                  "company": "Stripe",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Backend Platform Engineer",
+                      "company": "Stripe",
+                      "location": "Seattle, WA (United States)",
+                      "url": "https://stripe.com/jobs",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.129Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Amazon",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Software Development Engineer",
+                      "company": "Amazon",
+                      "location": "Toronto, Ontario, Canada",
+                      "url": "https://amazon.jobs",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.129Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Backend Platform Engineer",
+                  "company": "Stripe",
+                  "location": "Seattle, WA (United States)",
+                  "url": "https://stripe.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.129Z"
+                },
+                {
+                  "title": "Software Development Engineer",
+                  "company": "Amazon",
+                  "location": "Toronto, Ontario, Canada",
+                  "url": "https://amazon.jobs",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.129Z"
+                }
+              ]
+            }
+          },
+          {
+            "certKey": "terraform-assoc",
+            "closesGaps": [
+              2
+            ],
+            "whyForGoal": "Proves your ability to automate cloud infrastructure as code in under 3 weeks of study, filling a direct gap in modern DevOps workflows.",
+            "roadmapPhase": "quickWins",
+            "tags": [
+              "fastest",
+              "best_roi"
+            ],
+            "readinessBonus": 4,
+            "catalogEntry": {
+              "key": "terraform-assoc",
+              "name": "HashiCorp Certified: Terraform Associate (003)",
+              "issuer": "HashiCorp",
+              "level": "Associate",
+              "exam_code": "003",
+              "category": "Infrastructure as Code",
+              "cost_usd_min": 70,
+              "cost_usd_max": 70,
+              "is_free": false,
+              "study_weeks": 3,
+              "validity_years": 2,
+              "difficulty": 2,
+              "official_url": "https://www.hashicorp.com/certification/terraform-associate",
+              "common_employers": [
+                "HashiCorp",
+                "GitLab",
+                "Datadog",
+                "Atlassian",
+                "Stripe",
+                "Figma",
+                "Uber"
+              ],
+              "skills": [
+                "Terraform CLI",
+                "HCL Syntax",
+                "Terraform State Management",
+                "Modules",
+                "Terraform Cloud"
+              ],
+              "aliases": [
+                "Terraform Associate",
+                "HashiCorp Terraform",
+                "Terraform Certified",
+                "TA-003"
+              ],
+              "last_verified_at": "2026-11-05T00:00:00Z"
+            },
+            "openJobsMentionCount": 6,
+            "userStatus": "not_started",
+            "matchScoreBefore": 68,
+            "matchScoreAfter": 80,
+            "evidence": {
+              "certKey": "terraform-assoc",
+              "totalMentionCount": 6,
+              "hiringNowCount": 3,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:54:06.132Z",
+              "topEmployers": [
+                {
+                  "company": "Stripe",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Backend Platform Engineer",
+                      "company": "Stripe",
+                      "location": "Seattle, WA (United States)",
+                      "url": "https://stripe.com/jobs",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.131Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Atlassian",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Principal Systems & Collaboration Engineer",
+                      "company": "Atlassian",
+                      "location": "Sydney, New South Wales, Australia",
+                      "url": "https://atlassian.com/careers",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.132Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "GitLab",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Remote Site Reliability Engineer (Kubernetes)",
+                      "company": "GitLab",
+                      "location": "Remote (Worldwide)",
+                      "url": "https://about.gitlab.com/jobs",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.132Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Backend Platform Engineer",
+                  "company": "Stripe",
+                  "location": "Seattle, WA (United States)",
+                  "url": "https://stripe.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.131Z"
+                },
+                {
+                  "title": "Principal Systems & Collaboration Engineer",
+                  "company": "Atlassian",
+                  "location": "Sydney, New South Wales, Australia",
+                  "url": "https://atlassian.com/careers",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.132Z"
+                },
+                {
+                  "title": "Remote Site Reliability Engineer (Kubernetes)",
+                  "company": "GitLab",
+                  "location": "Remote (Worldwide)",
+                  "url": "https://about.gitlab.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.132Z"
+                }
+              ]
+            }
+          },
+          {
+            "certKey": "ckad",
+            "closesGaps": [
+              0,
+              2
+            ],
+            "whyForGoal": "Demonstrates hands-on container orchestration and microservice deployment under strict time limits, respected by top-tier engineering hiring teams.",
+            "roadmapPhase": "buildProof",
+            "tags": [
+              "most_requested"
+            ],
+            "readinessBonus": 5,
+            "catalogEntry": {
+              "key": "ckad",
+              "name": "Certified Kubernetes Application Developer (CKAD)",
+              "issuer": "Cloud Native Computing Foundation (CNCF)",
+              "level": "Associate",
+              "exam_code": "CKAD",
+              "category": "DevOps & Containers",
+              "cost_usd_min": 395,
+              "cost_usd_max": 395,
+              "is_free": false,
+              "study_weeks": 6,
+              "validity_years": 3,
+              "difficulty": 4,
+              "official_url": "https://www.cncf.io/certification/ckad/",
+              "common_employers": [
+                "Google",
+                "Red Hat",
+                "Spotify",
+                "Shopify",
+                "Target",
+                "Cisco",
+                "Adobe",
+                "VMware"
+              ],
+              "skills": [
+                "Kubernetes Pods & Services",
+                "ConfigMaps & Secrets",
+                "Deployments & Rolling Updates",
+                "Ingress Controllers",
+                "Helm"
+              ],
+              "aliases": [
+                "CKAD",
+                "Certified Kubernetes Application Developer",
+                "CNCF CKAD"
+              ],
+              "last_verified_at": "2026-11-10T00:00:00Z"
+            },
+            "openJobsMentionCount": 2,
+            "userStatus": "not_started",
+            "matchScoreBefore": 71,
+            "matchScoreAfter": 85,
+            "evidence": {
+              "certKey": "ckad",
+              "totalMentionCount": 2,
+              "hiringNowCount": 1,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:54:06.134Z",
+              "topEmployers": [
+                {
+                  "company": "Google",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Software Engineer Intern — Summer 2026",
+                      "company": "Google",
+                      "location": "Mountain View, CA (United States)",
+                      "url": "https://careers.google.com/jobs",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.133Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Software Engineer Intern — Summer 2026",
+                  "company": "Google",
+                  "location": "Mountain View, CA (United States)",
+                  "url": "https://careers.google.com/jobs",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.133Z"
+                }
+              ]
+            }
+          },
+          {
+            "certKey": "fcc-fullstack",
+            "closesGaps": [
+              0
+            ],
+            "whyForGoal": "100% free verified credential showcasing end-to-end full stack architecture with verifiable projects you can link directly in your resume.",
+            "roadmapPhase": "quickWins",
+            "tags": [
+              "free"
+            ],
+            "readinessBonus": 3,
+            "catalogEntry": {
+              "key": "fcc-fullstack",
+              "name": "freeCodeCamp Full Stack Developer Certification",
+              "issuer": "freeCodeCamp",
+              "level": "Associate",
+              "exam_code": null,
+              "category": "Frontend & Web",
+              "cost_usd_min": 0,
+              "cost_usd_max": 0,
+              "is_free": true,
+              "study_weeks": 10,
+              "validity_years": null,
+              "difficulty": 3,
+              "official_url": "https://www.freecodecamp.org/learn/",
+              "common_employers": [
+                "Apple",
+                "Spotify",
+                "Microsoft",
+                "Amazon",
+                "Accenture",
+                "Tech Startups"
+              ],
+              "skills": [
+                "Full Stack Architecture",
+                "Node.js",
+                "Express.js",
+                "MongoDB",
+                "React",
+                "TypeScript",
+                "Web Accessibility"
+              ],
+              "aliases": [
+                "freeCodeCamp Full Stack",
+                "fcc full stack",
+                "freeCodeCamp Certified"
+              ],
+              "last_verified_at": "2026-11-15T00:00:00Z"
+            },
+            "openJobsMentionCount": 4,
+            "userStatus": "not_started",
+            "matchScoreBefore": 70,
+            "matchScoreAfter": 82,
+            "evidence": {
+              "certKey": "fcc-fullstack",
+              "totalMentionCount": 4,
+              "hiringNowCount": 2,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:54:06.135Z",
+              "topEmployers": [
+                {
+                  "company": "Microsoft",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Azure Cloud Network Engineer",
+                      "company": "Microsoft",
+                      "location": "Hyderabad, Telangana, India",
+                      "url": "https://careers.microsoft.com",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.134Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Amazon",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Software Development Engineer",
+                      "company": "Amazon",
+                      "location": "Toronto, Ontario, Canada",
+                      "url": "https://amazon.jobs",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.135Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Azure Cloud Network Engineer",
+                  "company": "Microsoft",
+                  "location": "Hyderabad, Telangana, India",
+                  "url": "https://careers.microsoft.com",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.134Z"
+                },
+                {
+                  "title": "Software Development Engineer",
+                  "company": "Amazon",
+                  "location": "Toronto, Ontario, Canada",
+                  "url": "https://amazon.jobs",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.135Z"
+                }
+              ]
+            }
+          },
+          {
+            "certKey": "github-actions",
+            "closesGaps": [
+              2
+            ],
+            "whyForGoal": "Solidifies automated continuous integration and testing credentials in a fast 2-week exam that hiring managers look for on modern CI/CD stacks.",
+            "roadmapPhase": "quickWins",
+            "tags": [
+              "fastest"
+            ],
+            "readinessBonus": 3,
+            "catalogEntry": {
+              "key": "github-actions",
+              "name": "GitHub Certified: Actions",
+              "issuer": "GitHub",
+              "level": "Specialty",
+              "exam_code": null,
+              "category": "DevOps & Containers",
+              "cost_usd_min": 99,
+              "cost_usd_max": 99,
+              "is_free": false,
+              "study_weeks": 2,
+              "validity_years": 3,
+              "difficulty": 2,
+              "official_url": "https://examregistration.github.com/",
+              "common_employers": [
+                "GitHub",
+                "Microsoft",
+                "Shopify",
+                "Vercel",
+                "Stripe",
+                "Atlassian",
+                "Datadog"
+              ],
+              "skills": [
+                "CI/CD Pipelines",
+                "Workflow Triggers",
+                "Custom Actions (JS/Docker)",
+                "Self-Hosted Runners",
+                "Secret Management"
+              ],
+              "aliases": [
+                "GitHub Actions Certification",
+                "GitHub Certified Actions",
+                "GitHub CI/CD"
+              ],
+              "last_verified_at": "2026-11-08T00:00:00Z"
+            },
+            "openJobsMentionCount": 8,
+            "userStatus": "not_started",
+            "matchScoreBefore": 69,
+            "matchScoreAfter": 81,
+            "evidence": {
+              "certKey": "github-actions",
+              "totalMentionCount": 8,
+              "hiringNowCount": 4,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:54:06.136Z",
+              "topEmployers": [
+                {
+                  "company": "Microsoft",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Azure Cloud Network Engineer",
+                      "company": "Microsoft",
+                      "location": "Hyderabad, Telangana, India",
+                      "url": "https://careers.microsoft.com",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.135Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Vercel",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Senior Full Stack Engineer",
+                      "company": "Vercel",
+                      "location": "San Francisco, CA (United States)",
+                      "url": "https://vercel.com/careers",
+                      "source": "Ashby",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.136Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Stripe",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Backend Platform Engineer",
+                      "company": "Stripe",
+                      "location": "Seattle, WA (United States)",
+                      "url": "https://stripe.com/jobs",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.136Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Atlassian",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Principal Systems & Collaboration Engineer",
+                      "company": "Atlassian",
+                      "location": "Sydney, New South Wales, Australia",
+                      "url": "https://atlassian.com/careers",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:54:06.136Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Azure Cloud Network Engineer",
+                  "company": "Microsoft",
+                  "location": "Hyderabad, Telangana, India",
+                  "url": "https://careers.microsoft.com",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.135Z"
+                },
+                {
+                  "title": "Senior Full Stack Engineer",
+                  "company": "Vercel",
+                  "location": "San Francisco, CA (United States)",
+                  "url": "https://vercel.com/careers",
+                  "source": "Ashby",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.136Z"
+                },
+                {
+                  "title": "Backend Platform Engineer",
+                  "company": "Stripe",
+                  "location": "Seattle, WA (United States)",
+                  "url": "https://stripe.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.136Z"
+                },
+                {
+                  "title": "Principal Systems & Collaboration Engineer",
+                  "company": "Atlassian",
+                  "location": "Sydney, New South Wales, Australia",
+                  "url": "https://atlassian.com/careers",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:54:06.136Z"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "completed_steps": [],
+      "created_at": "2026-11-27T04:54:06.136Z"
+    },
+    {
+      "id": "goal_1795755158359_f02dw",
+      "user_id": "usr_demo_101",
+      "goal": "Frontend Engineer",
+      "timeline": "1 month",
+      "result": {
+        "readinessScore": 62,
+        "summary": "Your profile demonstrates strong foundational capabilities, but reaching \"Frontend Engineer\" within 1 month requires bridging 2 high-impact technical and leadership gaps. Focus on concrete architectural scale metrics and targeted credentials to position yourself as an immediate day-one contributor.",
+        "stats": {
+          "gapsFound": 4,
+          "highImpactCount": 2,
+          "timelineMonths": 1
+        },
+        "gaps": [
+          {
+            "id": "gap_1_fe_scale",
+            "category": "Web Performance & Architecture",
+            "title": "Core Web Vitals & Production Micro-Frontend Orchestration",
+            "severity": "high",
+            "resumeNow": "Shows proficiency in React and component development, but lacks quantifiable evidence of optimizing Core Web Vitals (LCP < 1.8s, INP < 200ms) on high-traffic consumer web surfaces.",
+            "goalNeeds": "For Frontend Engineer, top tech companies require deep mastery of server components (RSC), asset waterfall elimination, dynamic code-splitting, and real-user monitoring (RUM).",
+            "whyItMatters": "Staff and Senior frontend interviews test deep browser rendering pipelines, memory leak profiling, and bundle tree-shaking over basic UI syntax.",
+            "actionSteps": [
+              {
+                "id": "step_1_1",
+                "text": "Profile and record performance benchmarks achieving 98+ Google Lighthouse scores with Next.js App Router and dynamic code chunking.",
+                "phase": "week_1_2"
+              },
+              {
+                "id": "step_1_2",
+                "text": "Revise resume bullets to highlight metric gains: \"Boosted Core Web Vitals to 99th percentile across 2M+ visits, cutting Largest Contentful Paint by 42%.\"",
+                "phase": "week_1_2"
+              },
+              {
+                "id": "step_1_3",
+                "text": "Create an accessible, keyboard-navigable component design system adhering to WCAG 2.1 AA specifications.",
+                "phase": "week_3_6"
+              }
+            ]
+          },
+          {
+            "id": "gap_2_leadership",
+            "category": "Engineering Leadership & Cross-Functional Impact",
+            "title": "Cross-Functional Technical Direction & Architecture RFC Ownership",
+            "severity": "high",
+            "resumeNow": "Framed primarily around individual task delivery and ticket completion rather than driving technical roadmaps, writing architecture RFCs, or mentoring engineers.",
+            "goalNeeds": "Hiring committees for Frontend Engineer seek candidates who demonstrate business acumen, cross-team alignment with Product & Design, and proactive technical risk mitigation.",
+            "whyItMatters": "Candidates without demonstrable project sponsorship and architectural RFC ownership are frequently down-leveled to mid-level roles.",
+            "actionSteps": [
+              {
+                "id": "step_2_1",
+                "text": "Reframe projects on your resume around business KPIs (churn reduction, developer velocity, infrastructure cost savings) rather than tools alone.",
+                "phase": "week_1_2"
+              },
+              {
+                "id": "step_2_2",
+                "text": "Draft and publish a technical RFC template detailing trade-offs, security postures, and migration rollbacks for an ambitious feature.",
+                "phase": "week_3_6"
+              },
+              {
+                "id": "step_2_3",
+                "text": "Add explicit mentorship accomplishments: \"Mentored 3 junior/mid engineers and established team-wide TypeScript & automated testing standards.\"",
+                "phase": "week_1_2"
+              }
+            ]
+          },
+          {
+            "id": "gap_3_cloud",
+            "category": "Cloud Infrastructure & Observability",
+            "title": "Automated CI/CD Pipelines, Docker Containerization & OpenTelemetry",
+            "severity": "medium",
+            "resumeNow": "Mentions cloud platforms generally, but lacks concrete metrics regarding automated canary deployments, telemetry tracing, or infrastructure-as-code.",
+            "goalNeeds": "Strong familiarity with modern observability stacks (Prometheus, OpenTelemetry, Datadog), containerization, and zero-downtime blue/green deployment workflows.",
+            "whyItMatters": "Modern engineering organizations expect engineers to own their code in production with automated alerting, MTTR reduction, and monitoring.",
+            "actionSteps": [
+              {
+                "id": "step_3_1",
+                "text": "Set up an automated GitHub Actions CI/CD workflow with linting, unit test coverage gates (>85%), and automated preview deployments.",
+                "phase": "week_1_2"
+              },
+              {
+                "id": "step_3_2",
+                "text": "Add structured logging, health check endpoints, and distributed tracing instrumentation to your featured portfolio project.",
+                "phase": "week_3_6"
+              }
+            ]
+          },
+          {
+            "id": "gap_4_narrative",
+            "category": "Interview Polish & Thought Leadership",
+            "title": "System Design Narrative Polish & Public Technical Artifacts",
+            "severity": "low",
+            "resumeNow": "GitHub profile and resume show solid technical projects, but lack concise one-paragraph architectural diagrams or public system design write-ups.",
+            "goalNeeds": "Polished technical elevator pitch, clean public repository readmes with architecture diagrams, and prepared STAR interview stories.",
+            "whyItMatters": "Clear verbal and visual communication of system design concepts is the deciding factor between a standard hire and an offer with top-band equity compensation.",
+            "actionSteps": [
+              {
+                "id": "step_4_1",
+                "text": "Prepare 4 high-stakes STAR behavioral narratives emphasizing conflict resolution, architectural pivots, and critical production outage post-mortems.",
+                "phase": "week_7_plus"
+              },
+              {
+                "id": "step_4_2",
+                "text": "Add a clean Mermaid or SVG system architecture diagram to your primary open-source portfolio repository.",
+                "phase": "week_7_plus"
+              }
+            ]
+          }
+        ],
+        "roadmap": [
+          {
+            "phaseId": "week_1_2",
+            "title": "Weeks 1–2: Quick Wins",
+            "subtitle": "Resume reframing, high-impact XYZ metrics & immediate positioning",
+            "items": [
+              "Audit all past experience bullets and inject quantifiable throughput, latency, and business metrics.",
+              "Align headline and keywords specifically targeting \"Frontend Engineer\" to achieve a 90%+ ATS score.",
+              "Set up automated GitHub Actions CI/CD pipeline on personal repositories."
+            ]
+          },
+          {
+            "phaseId": "week_3_6",
+            "title": "Weeks 3–6: Build Proof",
+            "subtitle": "Tangible architecture artifacts & live deployed reference projects",
+            "items": [
+              "Build and publish a production-grade reference microservice with caching, rate limiting, and observability.",
+              "Draft an engineering RFC demonstrating deep technical decision-making and trade-off analysis.",
+              "Conduct 3 timed system design simulations tackling high-traffic scale scenarios."
+            ]
+          },
+          {
+            "phaseId": "week_7_plus",
+            "title": "Weeks 7+: Polish & Showcase",
+            "subtitle": "Interview narratives, system design simulations & targeted outreach",
+            "items": [
+              "Rehearse STAR behavioral leadership stories emphasizing mentorship and cross-functional ownership.",
+              "Initiate targeted outreach to engineering managers and talent partners at target firms.",
+              "Finalize portfolio showcase with system architecture diagrams and live demo links."
+            ]
+          }
+        ],
+        "certifications": [
+          {
+            "certKey": "aws-saa",
+            "closesGaps": [
+              0,
+              2
+            ],
+            "whyForGoal": "Validates deep cloud architecture and high-availability patterns required for Frontend Engineer, instantly boosting recruiter screening rates.",
+            "roadmapPhase": "quickWins",
+            "tags": [
+              "best_roi",
+              "most_requested"
+            ],
+            "readinessBonus": 5,
+            "catalogEntry": {
+              "key": "aws-saa",
+              "name": "AWS Certified Solutions Architect – Associate",
+              "issuer": "Amazon Web Services",
+              "level": "Associate",
+              "exam_code": "SAA-C03",
+              "category": "Cloud Architecture",
+              "cost_usd_min": 150,
+              "cost_usd_max": 150,
+              "is_free": false,
+              "study_weeks": 6,
+              "validity_years": 3,
+              "difficulty": 3,
+              "official_url": "https://aws.amazon.com/certification/certified-solutions-architect-associate/",
+              "common_employers": [
+                "Amazon",
+                "Capital One",
+                "Stripe",
+                "Netflix",
+                "Deloitte",
+                "Slalom",
+                "Accenture",
+                "JPMorgan Chase"
+              ],
+              "skills": [
+                "AWS IAM",
+                "Amazon EC2",
+                "Amazon S3",
+                "Amazon VPC",
+                "AWS Lambda",
+                "Amazon RDS",
+                "DynamoDB",
+                "High Availability"
+              ],
+              "aliases": [
+                "AWS SAA",
+                "AWS Solutions Architect Associate",
+                "SAA-C03",
+                "AWS Solutions Architect"
+              ],
+              "last_verified_at": "2026-11-01T00:00:00Z"
+            },
+            "openJobsMentionCount": 4,
+            "userStatus": "not_started",
+            "matchScoreBefore": 73,
+            "matchScoreAfter": 85,
+            "evidence": {
+              "certKey": "aws-saa",
+              "totalMentionCount": 4,
+              "hiringNowCount": 2,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:53:52.910Z",
+              "topEmployers": [
+                {
+                  "company": "Stripe",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Backend Platform Engineer",
+                      "company": "Stripe",
+                      "location": "Seattle, WA (United States)",
+                      "url": "https://stripe.com/jobs",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.906Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Amazon",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Software Development Engineer",
+                      "company": "Amazon",
+                      "location": "Toronto, Ontario, Canada",
+                      "url": "https://amazon.jobs",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.907Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Backend Platform Engineer",
+                  "company": "Stripe",
+                  "location": "Seattle, WA (United States)",
+                  "url": "https://stripe.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.906Z"
+                },
+                {
+                  "title": "Software Development Engineer",
+                  "company": "Amazon",
+                  "location": "Toronto, Ontario, Canada",
+                  "url": "https://amazon.jobs",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.907Z"
+                }
+              ]
+            }
+          },
+          {
+            "certKey": "terraform-assoc",
+            "closesGaps": [
+              2
+            ],
+            "whyForGoal": "Proves your ability to automate cloud infrastructure as code in under 3 weeks of study, filling a direct gap in modern DevOps workflows.",
+            "roadmapPhase": "quickWins",
+            "tags": [
+              "fastest",
+              "best_roi"
+            ],
+            "readinessBonus": 4,
+            "catalogEntry": {
+              "key": "terraform-assoc",
+              "name": "HashiCorp Certified: Terraform Associate (003)",
+              "issuer": "HashiCorp",
+              "level": "Associate",
+              "exam_code": "003",
+              "category": "Infrastructure as Code",
+              "cost_usd_min": 70,
+              "cost_usd_max": 70,
+              "is_free": false,
+              "study_weeks": 3,
+              "validity_years": 2,
+              "difficulty": 2,
+              "official_url": "https://www.hashicorp.com/certification/terraform-associate",
+              "common_employers": [
+                "HashiCorp",
+                "GitLab",
+                "Datadog",
+                "Atlassian",
+                "Stripe",
+                "Figma",
+                "Uber"
+              ],
+              "skills": [
+                "Terraform CLI",
+                "HCL Syntax",
+                "Terraform State Management",
+                "Modules",
+                "Terraform Cloud"
+              ],
+              "aliases": [
+                "Terraform Associate",
+                "HashiCorp Terraform",
+                "Terraform Certified",
+                "TA-003"
+              ],
+              "last_verified_at": "2026-11-05T00:00:00Z"
+            },
+            "openJobsMentionCount": 6,
+            "userStatus": "not_started",
+            "matchScoreBefore": 68,
+            "matchScoreAfter": 80,
+            "evidence": {
+              "certKey": "terraform-assoc",
+              "totalMentionCount": 6,
+              "hiringNowCount": 3,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:53:52.913Z",
+              "topEmployers": [
+                {
+                  "company": "Stripe",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Backend Platform Engineer",
+                      "company": "Stripe",
+                      "location": "Seattle, WA (United States)",
+                      "url": "https://stripe.com/jobs",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.912Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Atlassian",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Principal Systems & Collaboration Engineer",
+                      "company": "Atlassian",
+                      "location": "Sydney, New South Wales, Australia",
+                      "url": "https://atlassian.com/careers",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.913Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "GitLab",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Remote Site Reliability Engineer (Kubernetes)",
+                      "company": "GitLab",
+                      "location": "Remote (Worldwide)",
+                      "url": "https://about.gitlab.com/jobs",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.913Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Backend Platform Engineer",
+                  "company": "Stripe",
+                  "location": "Seattle, WA (United States)",
+                  "url": "https://stripe.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.912Z"
+                },
+                {
+                  "title": "Principal Systems & Collaboration Engineer",
+                  "company": "Atlassian",
+                  "location": "Sydney, New South Wales, Australia",
+                  "url": "https://atlassian.com/careers",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.913Z"
+                },
+                {
+                  "title": "Remote Site Reliability Engineer (Kubernetes)",
+                  "company": "GitLab",
+                  "location": "Remote (Worldwide)",
+                  "url": "https://about.gitlab.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.913Z"
+                }
+              ]
+            }
+          },
+          {
+            "certKey": "ckad",
+            "closesGaps": [
+              0,
+              2
+            ],
+            "whyForGoal": "Demonstrates hands-on container orchestration and microservice deployment under strict time limits, respected by top-tier engineering hiring teams.",
+            "roadmapPhase": "buildProof",
+            "tags": [
+              "most_requested"
+            ],
+            "readinessBonus": 5,
+            "catalogEntry": {
+              "key": "ckad",
+              "name": "Certified Kubernetes Application Developer (CKAD)",
+              "issuer": "Cloud Native Computing Foundation (CNCF)",
+              "level": "Associate",
+              "exam_code": "CKAD",
+              "category": "DevOps & Containers",
+              "cost_usd_min": 395,
+              "cost_usd_max": 395,
+              "is_free": false,
+              "study_weeks": 6,
+              "validity_years": 3,
+              "difficulty": 4,
+              "official_url": "https://www.cncf.io/certification/ckad/",
+              "common_employers": [
+                "Google",
+                "Red Hat",
+                "Spotify",
+                "Shopify",
+                "Target",
+                "Cisco",
+                "Adobe",
+                "VMware"
+              ],
+              "skills": [
+                "Kubernetes Pods & Services",
+                "ConfigMaps & Secrets",
+                "Deployments & Rolling Updates",
+                "Ingress Controllers",
+                "Helm"
+              ],
+              "aliases": [
+                "CKAD",
+                "Certified Kubernetes Application Developer",
+                "CNCF CKAD"
+              ],
+              "last_verified_at": "2026-11-10T00:00:00Z"
+            },
+            "openJobsMentionCount": 2,
+            "userStatus": "not_started",
+            "matchScoreBefore": 71,
+            "matchScoreAfter": 85,
+            "evidence": {
+              "certKey": "ckad",
+              "totalMentionCount": 2,
+              "hiringNowCount": 1,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:53:52.916Z",
+              "topEmployers": [
+                {
+                  "company": "Google",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Software Engineer Intern — Summer 2026",
+                      "company": "Google",
+                      "location": "Mountain View, CA (United States)",
+                      "url": "https://careers.google.com/jobs",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.916Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Software Engineer Intern — Summer 2026",
+                  "company": "Google",
+                  "location": "Mountain View, CA (United States)",
+                  "url": "https://careers.google.com/jobs",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.916Z"
+                }
+              ]
+            }
+          },
+          {
+            "certKey": "fcc-fullstack",
+            "closesGaps": [
+              0
+            ],
+            "whyForGoal": "100% free verified credential showcasing end-to-end full stack architecture with verifiable projects you can link directly in your resume.",
+            "roadmapPhase": "quickWins",
+            "tags": [
+              "free"
+            ],
+            "readinessBonus": 3,
+            "catalogEntry": {
+              "key": "fcc-fullstack",
+              "name": "freeCodeCamp Full Stack Developer Certification",
+              "issuer": "freeCodeCamp",
+              "level": "Associate",
+              "exam_code": null,
+              "category": "Frontend & Web",
+              "cost_usd_min": 0,
+              "cost_usd_max": 0,
+              "is_free": true,
+              "study_weeks": 10,
+              "validity_years": null,
+              "difficulty": 3,
+              "official_url": "https://www.freecodecamp.org/learn/",
+              "common_employers": [
+                "Apple",
+                "Spotify",
+                "Microsoft",
+                "Amazon",
+                "Accenture",
+                "Tech Startups"
+              ],
+              "skills": [
+                "Full Stack Architecture",
+                "Node.js",
+                "Express.js",
+                "MongoDB",
+                "React",
+                "TypeScript",
+                "Web Accessibility"
+              ],
+              "aliases": [
+                "freeCodeCamp Full Stack",
+                "fcc full stack",
+                "freeCodeCamp Certified"
+              ],
+              "last_verified_at": "2026-11-15T00:00:00Z"
+            },
+            "openJobsMentionCount": 4,
+            "userStatus": "not_started",
+            "matchScoreBefore": 70,
+            "matchScoreAfter": 82,
+            "evidence": {
+              "certKey": "fcc-fullstack",
+              "totalMentionCount": 4,
+              "hiringNowCount": 2,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:53:52.918Z",
+              "topEmployers": [
+                {
+                  "company": "Microsoft",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Azure Cloud Network Engineer",
+                      "company": "Microsoft",
+                      "location": "Hyderabad, Telangana, India",
+                      "url": "https://careers.microsoft.com",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.917Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Amazon",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Software Development Engineer",
+                      "company": "Amazon",
+                      "location": "Toronto, Ontario, Canada",
+                      "url": "https://amazon.jobs",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.918Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Azure Cloud Network Engineer",
+                  "company": "Microsoft",
+                  "location": "Hyderabad, Telangana, India",
+                  "url": "https://careers.microsoft.com",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.917Z"
+                },
+                {
+                  "title": "Software Development Engineer",
+                  "company": "Amazon",
+                  "location": "Toronto, Ontario, Canada",
+                  "url": "https://amazon.jobs",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.918Z"
+                }
+              ]
+            }
+          },
+          {
+            "certKey": "github-actions",
+            "closesGaps": [
+              2
+            ],
+            "whyForGoal": "Solidifies automated continuous integration and testing credentials in a fast 2-week exam that hiring managers look for on modern CI/CD stacks.",
+            "roadmapPhase": "quickWins",
+            "tags": [
+              "fastest"
+            ],
+            "readinessBonus": 3,
+            "catalogEntry": {
+              "key": "github-actions",
+              "name": "GitHub Certified: Actions",
+              "issuer": "GitHub",
+              "level": "Specialty",
+              "exam_code": null,
+              "category": "DevOps & Containers",
+              "cost_usd_min": 99,
+              "cost_usd_max": 99,
+              "is_free": false,
+              "study_weeks": 2,
+              "validity_years": 3,
+              "difficulty": 2,
+              "official_url": "https://examregistration.github.com/",
+              "common_employers": [
+                "GitHub",
+                "Microsoft",
+                "Shopify",
+                "Vercel",
+                "Stripe",
+                "Atlassian",
+                "Datadog"
+              ],
+              "skills": [
+                "CI/CD Pipelines",
+                "Workflow Triggers",
+                "Custom Actions (JS/Docker)",
+                "Self-Hosted Runners",
+                "Secret Management"
+              ],
+              "aliases": [
+                "GitHub Actions Certification",
+                "GitHub Certified Actions",
+                "GitHub CI/CD"
+              ],
+              "last_verified_at": "2026-11-08T00:00:00Z"
+            },
+            "openJobsMentionCount": 8,
+            "userStatus": "not_started",
+            "matchScoreBefore": 69,
+            "matchScoreAfter": 81,
+            "evidence": {
+              "certKey": "github-actions",
+              "totalMentionCount": 8,
+              "hiringNowCount": 4,
+              "historicalCount": 0,
+              "lastCheckedAt": "2026-11-27T04:53:52.920Z",
+              "topEmployers": [
+                {
+                  "company": "Microsoft",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Azure Cloud Network Engineer",
+                      "company": "Microsoft",
+                      "location": "Hyderabad, Telangana, India",
+                      "url": "https://careers.microsoft.com",
+                      "source": "Direct Career Page",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.919Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Vercel",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Senior Full Stack Engineer",
+                      "company": "Vercel",
+                      "location": "San Francisco, CA (United States)",
+                      "url": "https://vercel.com/careers",
+                      "source": "Ashby",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.920Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Stripe",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Backend Platform Engineer",
+                      "company": "Stripe",
+                      "location": "Seattle, WA (United States)",
+                      "url": "https://stripe.com/jobs",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.920Z"
+                    }
+                  ]
+                },
+                {
+                  "company": "Atlassian",
+                  "openRolesCount": 1,
+                  "sampleRoles": [
+                    {
+                      "title": "Principal Systems & Collaboration Engineer",
+                      "company": "Atlassian",
+                      "location": "Sydney, New South Wales, Australia",
+                      "url": "https://atlassian.com/careers",
+                      "source": "Greenhouse",
+                      "isRecent": true,
+                      "postedAt": "2026-11-27T04:53:52.920Z"
+                    }
+                  ]
+                }
+              ],
+              "sampleRoles": [
+                {
+                  "title": "Azure Cloud Network Engineer",
+                  "company": "Microsoft",
+                  "location": "Hyderabad, Telangana, India",
+                  "url": "https://careers.microsoft.com",
+                  "source": "Direct Career Page",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.919Z"
+                },
+                {
+                  "title": "Senior Full Stack Engineer",
+                  "company": "Vercel",
+                  "location": "San Francisco, CA (United States)",
+                  "url": "https://vercel.com/careers",
+                  "source": "Ashby",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.920Z"
+                },
+                {
+                  "title": "Backend Platform Engineer",
+                  "company": "Stripe",
+                  "location": "Seattle, WA (United States)",
+                  "url": "https://stripe.com/jobs",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.920Z"
+                },
+                {
+                  "title": "Principal Systems & Collaboration Engineer",
+                  "company": "Atlassian",
+                  "location": "Sydney, New South Wales, Australia",
+                  "url": "https://atlassian.com/careers",
+                  "source": "Greenhouse",
+                  "isRecent": true,
+                  "postedAt": "2026-11-27T04:53:52.920Z"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "completed_steps": [],
+      "created_at": "2026-11-27T04:52:38.359Z"
+    },
+    {
       "id": "goal_1795738418157_r2euj",
       "user_id": "usr_demo_101",
       "goal": "Senior Full Stack Engineer",
