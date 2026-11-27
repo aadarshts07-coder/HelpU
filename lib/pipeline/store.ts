@@ -302,3 +302,25 @@ export function createJobAlert(alert: { email: string; query: string; location: 
     return false;
   }
 }
+
+export function getJobReports(): any[] {
+  try {
+    if (fs.existsSync(REPORTS_STORAGE_FILE)) {
+      return JSON.parse(fs.readFileSync(REPORTS_STORAGE_FILE, 'utf8'));
+    }
+  } catch (e) {
+    // fallback
+  }
+  return [];
+}
+
+export function getJobAlerts(): any[] {
+  try {
+    if (fs.existsSync(ALERTS_STORAGE_FILE)) {
+      return JSON.parse(fs.readFileSync(ALERTS_STORAGE_FILE, 'utf8'));
+    }
+  } catch (e) {
+    // fallback
+  }
+  return [];
+}

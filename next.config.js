@@ -1,3 +1,5 @@
+const path = require('path');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -11,6 +13,10 @@ const nextConfig = {
     domains: ['images.unsplash.com', 'logo.clearbit.com', 'avatars.githubusercontent.com'],
   },
   webpack: (config, { isServer }) => {
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      '@': path.resolve(__dirname),
+    };
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
